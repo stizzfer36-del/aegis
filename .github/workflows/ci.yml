@@ -1,0 +1,24 @@
+name: ci
+on: [push, pull_request]
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - run: python -m pip install -e '.[dev]'
+      - run: pytest -q
+      - run: python - <<'PY'
+from kernel.events import AegisEvent
+print('schema-ok', hasattr(AegisEvent, 'from_dict') and hasattr(AegisEvent, 'to_dict'))
+PY
+      - run: python - <<'PY'
+from kernel.policy import PolicyGate
+print('policy-ok', PolicyGate().max_auto_spend_usd)
+PY
+      - run: python - <<'PY'
+from kernel.scheduler import Scheduler
+print('structure-score-ok', bool(Scheduler()))
+PY
