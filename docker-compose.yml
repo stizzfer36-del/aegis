@@ -1,0 +1,46 @@
+services:
+  nats:
+    image: nats:2.10-alpine
+    ports: ["4222:4222"]
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:8222/varz"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    command: ["-js", "-m", "8222"]
+
+  letta:
+    image: letta/letta:latest
+    ports: ["8283:8283"]
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8283/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 10
+
+  langfuse:
+    image: langfuse/langfuse:2
+    ports: ["3000:3000"]
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:3000"]
+      interval: 15s
+      timeout: 5s
+      retries: 10
+
+  ollama:
+    image: ollama/ollama:latest
+    ports: ["11434:11434"]
+    healthcheck:
+      test: ["CMD", "ollama", "list"]
+      interval: 20s
+      timeout: 10s
+      retries: 5
+
+  conduit:
+    image: matrixconduit/matrix-conduit:latest
+    ports: ["6167:6167"]
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:6167/_matrix/client/versions"]
+      interval: 20s
+      timeout: 5s
+      retries: 10
