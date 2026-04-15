@@ -4,16 +4,17 @@ import asyncio
 import importlib.util
 import logging
 import signal
+import socket
 import threading
 import time
 from pathlib import Path
-from typing import List, Optional, Tuple
 
 from agents.forge.agent import ForgeAgent
 from agents.herald.agent import HeraldAgent
 from agents.loop.agent import LoopAgent
 from agents.scribe.agent import ScribeAgent
 from agents.warden.agent import WardenAgent
+from kernel.anomaly import AnomalyDetector
 from kernel.bus import EventBus
 from kernel.checkpoint import CheckpointStore
 from kernel.memory import MemoryClient
@@ -22,14 +23,16 @@ from kernel.provenance import ProvenanceStore
 from kernel.router import ModelRouter
 from kernel.scheduler import Scheduler, tick
 from kernel.state_sync import StateSyncStore
-from kernel.anomaly import AnomalyDetector
 
-logging.basicConfig(level=logging.INFO, format='{"level":"%(levelname)s","name":"%(name)s","message":"%(message)s"}')
+logging.basicConfig(
+    level=logging.INFO,
+    format='{"level":"%(levelname)s","name":"%(name)s","message":"%(message)s"}',
+)
 LOGGER = logging.getLogger("run")
 
 
-def _doctor_checks() -> List[str]:
-    failures: List[str] = []
+def _doctor_checks() -> list[str]:
+    failures: list[str] = []
     try:
         EventBus()
     except Exception as exc:  # noqa: BLE001
@@ -41,13 +44,7 @@ def _doctor_checks() -> List[str]:
     return failures
 
 
-async def _agent_listener(agent) -> None:
-    agent.bind()
-    while True:
-        await asyncio.sleep(1.0)
-
-
-def _start_lens_server() -> Tuple[Optional[object], Optional[threading.Thread]]:
+def _start_lens_server() -> tuple[object | None, threading.Thread | None]:
     lens_path = Path("lens/server.py")
     if not lens_path.exists():
         return None, None
@@ -75,8 +72,17 @@ def _start_lens_server() -> Tuple[Optional[object], Optional[threading.Thread]]:
 
     thread = threading.Thread(target=_run, name="aegis-lens", daemon=True)
     thread.start()
-    time.sleep(0.15)
-    print("AEGIS Lens running → http://localhost:7771")
+
+    deadline = time.time() + 3.0
+    while time.time() < deadline:
+        try:
+            with socket.create_connection(("127.0.0.1", 7771), timeout=0.15):
+                print("AEGIS Lens running → http://localhost:7771")
+                return server, thread
+        except OSError:
+            time.sleep(0.05)
+
+    print("AEGIS Lens startup pending — endpoint not ready yet")
     return server, thread
 
 
@@ -103,12 +109,23 @@ async def _main() -> int:
         lambda: ScribeAgent(bus, memory=memory),
         lambda: HeraldAgent(bus),
         lambda: ForgeAgent(bus, outcome=outcome, checkpoint=checkpoint, provenance=provenance),
-        lambda: LoopAgent(bus, scheduler=scheduler, memory=memory, outcome=outcome, state_sync=state_sync),
+        lambda: LoopAgent(
+            bus,
+            scheduler=scheduler,
+            memory=memory,
+            outcome=outcome,
+            state_sync=state_sync,
+        ),
     ):
         try:
             agents.append(factory())
         except Exception as exc:  # noqa: BLE001
-            LOGGER.exception("agent_init_failed", extra={"error": str(exc), "factory": str(factory)})
+            LOGGER.exception(
+                "agent_init_failed",
+                extra={"error": str(exc), "factory": str(factory)},
+            )
+    for agent in agents:
+        agent.bind()
 
     bus_mode = "fallback"
     memory_mode = "sqlite"
@@ -119,10 +136,12 @@ async def _main() -> int:
 
     lens_server, lens_thread = _start_lens_server()
 
-    tasks: List[asyncio.Task] = [asyncio.create_task(tick(scheduler, bus, interval_seconds=1.0), name="scheduler_tick")]
-    for agent in agents:
-        tasks.append(asyncio.create_task(_agent_listener(agent), name=f"listener_{agent.name}"))
-
+    tasks: list[asyncio.Task] = [
+        asyncio.create_task(
+            tick(scheduler, bus, interval_seconds=1.0),
+            name="scheduler_tick",
+        )
+    ]
     stop_event = asyncio.Event()
 
     def _request_shutdown() -> None:
@@ -143,7 +162,7 @@ async def _main() -> int:
         if lens_thread is not None:
             lens_thread.join(timeout=2.0)
 
-    bus.replay()
+    bus.close()
     memory.close()
     print("AEGIS shutdown clean")
     return 0

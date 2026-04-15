@@ -4,31 +4,39 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "aegis"
-version = "0.1.0"
+version = "0.2.0"
 description = "AEGIS digital operating system"
 requires-python = ">=3.10"
-dependencies = []
+dependencies = [
+  "fastapi>=0.115,<1",
+  "uvicorn[standard]>=0.30,<1",
+  "httpx>=0.27,<1",
+  "anyio>=4.4,<5",
+  "pydantic>=2.7,<3",
+  "pydantic-settings>=2.3,<3",
+  "python-dotenv>=1.0,<2",
+]
 
 [project.optional-dependencies]
-dev = ["pytest", "ruff", "mypy"]
-senses = ["psutil", "mss", "pytesseract", "RealtimeSTT", "faster-whisper"]
-radio = ["scapy", "bleak", "python-nmap"]
-browser = ["playwright"]
-usb = ["hidapi", "pyserial"]
-mcp = ["mcp"]
+dev = ["pytest>=8,<9", "ruff>=0.6,<1", "mypy>=1.10,<2"]
+senses = ["psutil>=6,<7", "mss>=9,<10", "pytesseract>=0.3,<1", "RealtimeSTT>=0.3,<1", "faster-whisper>=1,<2"]
+radio = ["scapy>=2.5,<3", "bleak>=0.22,<1", "python-nmap>=0.7,<1"]
+browser = ["playwright>=1.45,<2"]
+usb = ["hidapi>=0.14,<1", "pyserial>=3.5,<4"]
+mcp = ["mcp>=1,<2"]
 all = [
-  "psutil",
-  "mss",
-  "pytesseract",
-  "RealtimeSTT",
-  "faster-whisper",
-  "scapy",
-  "bleak",
-  "python-nmap",
-  "playwright",
-  "hidapi",
-  "pyserial",
-  "mcp",
+  "psutil>=6,<7",
+  "mss>=9,<10",
+  "pytesseract>=0.3,<1",
+  "RealtimeSTT>=0.3,<1",
+  "faster-whisper>=1,<2",
+  "scapy>=2.5,<3",
+  "bleak>=0.22,<1",
+  "python-nmap>=0.7,<1",
+  "playwright>=1.45,<2",
+  "hidapi>=0.14,<1",
+  "pyserial>=3.5,<4",
+  "mcp>=1,<2",
 ]
 
 [project.scripts]
@@ -39,16 +47,15 @@ where = ["."]
 include = ["kernel*", "agents*"]
 
 [tool.ruff]
-line-length = 120
+line-length = 100
 target-version = "py310"
 
 [tool.ruff.lint]
-select = ["E", "F", "I", "B"]
-ignore = ["E501"]
+select = ["E", "F", "I", "B", "S", "UP"]
 
 [tool.mypy]
 python_version = "3.10"
 warn_redundant_casts = true
 warn_unused_ignores = true
-disallow_untyped_defs = false
+disallow_untyped_defs = true
 ignore_missing_imports = true
