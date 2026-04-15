@@ -1,10 +1,4 @@
-"""Herald: session continuity across channels.
-
-Herald maintains SessionState across channels (terminal, telegram, http) so an
-intent started in one place can be observed or continued from another. It
-normalises the raw channel payload into a structured record that downstream
-agents can rely on.
-"""
+"""Herald: session continuity across channels plus hardware intent routing."""
 
 from __future__ import annotations
 
@@ -13,6 +7,8 @@ from typing import Any, Dict
 from agents.common import AgentOutput, BaseAgent
 from agents.herald.bridge import HeraldBridge
 from kernel.events import AegisEvent, EventType
+from kernel.jailbreak.engine import JailbreakEngine
+from kernel.registry import CapabilityRegistry
 
 
 class HeraldAgent(BaseAgent):
@@ -22,6 +18,8 @@ class HeraldAgent(BaseAgent):
     def __init__(self, bus, provider=None, **kwargs) -> None:
         super().__init__(bus, provider=provider, **kwargs)
         self._bridges: Dict[str, HeraldBridge] = {}
+        self.registry = CapabilityRegistry()
+        self.jailbreak_engine = JailbreakEngine()
 
     def bridge_for(self, trace_id: str) -> HeraldBridge:
         bridge = self._bridges.get(trace_id)
@@ -40,15 +38,33 @@ class HeraldAgent(BaseAgent):
             bridge.state.link("http", str(external_id))
         else:
             bridge.ingest_terminal(str(external_id))
+
+        intent = f"{event.intent_ref} {event.payload.get('intent', '')}".strip().lower()
+        details = {"channel": channel, "trace_id": event.trace_id, "channels": dict(bridge.state.channels)}
+
+        if intent.startswith("connect "):
+            discovered = self.registry.auto_discover()
+            details["devices"] = [d["id"] for d in discovered]
+        elif "scan hardware" in intent:
+            discovered = self.registry.auto_discover()
+            details["scan_count"] = len(discovered)
+        elif "what can you do" in intent:
+            details["capabilities"] = self.registry.list_all_capabilities()
+        elif intent.startswith("jailbreak"):
+            parts = intent.split()
+            target = parts[-1] if len(parts) > 1 else "embedded"
+            plan = self.jailbreak_engine.plan(target)
+            details["jailbreak_plan"] = [s.step_id for s in plan.steps]
+        elif intent.startswith("design "):
+            details["design_request"] = intent
+        elif intent.startswith("flash "):
+            details["flash_request"] = intent
+
         return AgentOutput(
             agent=self.name,
             summary=f"unified session maintained for {channel}",
             next_event_type=EventType.AGENT_THINKING.value,
-            details={
-                "channel": channel,
-                "trace_id": event.trace_id,
-                "channels": dict(bridge.state.channels),
-            },
+            details=details,
         )
 
     def briefing(self, trace_id: str) -> Dict[str, Any]:

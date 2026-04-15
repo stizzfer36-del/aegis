@@ -1,0 +1,1 @@
+{"procedures": [{"procedure_id": "nfc_read", "firmware_version": "1.0.0", "steps": ["connect", "scan", "dump"]}]}

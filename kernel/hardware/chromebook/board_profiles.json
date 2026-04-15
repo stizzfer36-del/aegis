@@ -1,0 +1,22 @@
+{
+  "ATLAS": {"firmware_url": "https://example.invalid/atlas.bin", "sha256": "atlas", "programmer_flags": "-p ch341a_spi"},
+  "EVE": {"firmware_url": "https://example.invalid/eve.bin", "sha256": "eve", "programmer_flags": "-p ch341a_spi"},
+  "NAMI": {"firmware_url": "https://example.invalid/nami.bin", "sha256": "nami", "programmer_flags": "-p ch341a_spi"},
+  "RAMMUS": {"firmware_url": "https://example.invalid/rammus.bin", "sha256": "rammus", "programmer_flags": "-p ch341a_spi"},
+  "OCTOPUS": {"firmware_url": "https://example.invalid/octopus.bin", "sha256": "octopus", "programmer_flags": "-p ch341a_spi"},
+  "CORAL": {"firmware_url": "https://example.invalid/coral.bin", "sha256": "coral", "programmer_flags": "-p ch341a_spi"},
+  "GRUNT": {"firmware_url": "https://example.invalid/grunt.bin", "sha256": "grunt", "programmer_flags": "-p ch341a_spi"},
+  "HATCH": {"firmware_url": "https://example.invalid/hatch.bin", "sha256": "hatch", "programmer_flags": "-p ch341a_spi"},
+  "KUKUI": {"firmware_url": "https://example.invalid/kukui.bin", "sha256": "kukui", "programmer_flags": "-p ch341a_spi"},
+  "TROGDOR": {"firmware_url": "https://example.invalid/trogdor.bin", "sha256": "trogdor", "programmer_flags": "-p ch341a_spi"},
+  "VOLTEER": {"firmware_url": "https://example.invalid/volteer.bin", "sha256": "volteer", "programmer_flags": "-p ch341a_spi"},
+  "BRYA": {"firmware_url": "https://example.invalid/brya.bin", "sha256": "brya", "programmer_flags": "-p ch341a_spi"},
+  "SKYRIM": {"firmware_url": "https://example.invalid/skyrim.bin", "sha256": "skyrim", "programmer_flags": "-p ch341a_spi"},
+  "NISSA": {"firmware_url": "https://example.invalid/nissa.bin", "sha256": "nissa", "programmer_flags": "-p ch341a_spi"},
+  "GERALT": {"firmware_url": "https://example.invalid/geralt.bin", "sha256": "geralt", "programmer_flags": "-p ch341a_spi"},
+  "HEROBRINE": {"firmware_url": "https://example.invalid/herobrine.bin", "sha256": "herobrine", "programmer_flags": "-p ch341a_spi"},
+  "ZORK": {"firmware_url": "https://example.invalid/zork.bin", "sha256": "zork", "programmer_flags": "-p ch341a_spi"},
+  "DEDEDE": {"firmware_url": "https://example.invalid/dedede.bin", "sha256": "dedede", "programmer_flags": "-p ch341a_spi"},
+  "WADDLEDEE": {"firmware_url": "https://example.invalid/waddledee.bin", "sha256": "waddledee", "programmer_flags": "-p ch341a_spi"},
+  "WADDLEDOO": {"firmware_url": "https://example.invalid/waddledoo.bin", "sha256": "waddledoo", "programmer_flags": "-p ch341a_spi"}
+}

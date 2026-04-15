@@ -1,0 +1,1 @@
+{"procedures": [{"procedure_id": "raspberry_pi_setup", "firmware_version": "bookworm", "steps": ["ssh", "configure", "gpio_test"]}]}
