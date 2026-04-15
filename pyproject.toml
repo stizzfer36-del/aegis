@@ -11,9 +11,15 @@ dependencies = []
 
 [project.optional-dependencies]
 dev = ["pytest"]
+senses = ["psutil", "mss", "pytesseract", "RealtimeSTT", "faster-whisper"]
+radio = ["scapy", "bleak", "python-nmap"]
+browser = ["playwright"]
+usb = ["hidapi", "pyserial"]
+mcp = ["mcp"]
+all = ["psutil", "mss", "pytesseract", "RealtimeSTT", "faster-whisper", "scapy", "bleak", "python-nmap", "playwright", "hidapi", "pyserial", "mcp"]
 
 [project.scripts]
 aegis = "kernel.introspect:main"
 
 [tool.setuptools]
-packages = ["kernel", "kernel.tools", "agents", "agents.warden", "agents.scribe", "agents.herald", "agents.forge", "agents.loop"]
+packages = ["kernel", "kernel.tools", "kernel.providers", "kernel.senses", "kernel.software", "agents", "agents.warden", "agents.scribe", "agents.herald", "agents.forge", "agents.loop"]
