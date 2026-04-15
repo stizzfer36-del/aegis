@@ -1,0 +1,31 @@
+version: '3.9'
+
+services:
+  nats:
+    image: nats:2.10-alpine
+    ports:
+      - "4222:4222"
+      - "8222:8222"
+    command: ["--http_port", "8222", "--jetstream"]
+    restart: unless-stopped
+
+  aegis:
+    build: ..
+    environment:
+      - OLLAMA_URL=${OLLAMA_URL:-}
+      - OPENROUTER_API_KEY=${OPENROUTER_API_KEY:-}
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
+      - TELEGRAM_BOT_TOKEN=${TELEGRAM_BOT_TOKEN:-}
+      - TELEGRAM_CHAT_ID=${TELEGRAM_CHAT_ID:-}
+      - NATS_URL=nats://nats:4222
+      - AEGIS_DATA_DIR=/data
+    volumes:
+      - aegis-data:/data
+    ports:
+      - "7771:7771"
+    depends_on:
+      - nats
+    restart: unless-stopped
+
+volumes:
+  aegis-data:

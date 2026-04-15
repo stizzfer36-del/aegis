@@ -1,158 +1,82 @@
+"""AEGIS v2 — single entrypoint."""
 from __future__ import annotations
-
 import asyncio
-import importlib.util
 import logging
+import os
 import signal
-import threading
-import time
 from pathlib import Path
-from typing import List, Optional, Tuple
 
-from agents.forge.agent import ForgeAgent
-from agents.herald.agent import HeraldAgent
-from agents.loop.agent import LoopAgent
-from agents.scribe.agent import ScribeAgent
-from agents.warden.agent import WardenAgent
-from kernel.bus import EventBus
-from kernel.checkpoint import CheckpointStore
-from kernel.memory import MemoryClient
-from kernel.outcome import OutcomeStore
-from kernel.provenance import ProvenanceStore
-from kernel.router import ModelRouter
-from kernel.scheduler import Scheduler, tick
-from kernel.state_sync import StateSyncStore
-from kernel.anomaly import AnomalyDetector
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+)
+log = logging.getLogger("aegis")
 
-logging.basicConfig(level=logging.INFO, format='{"level":"%(levelname)s","name":"%(name)s","message":"%(message)s"}')
-LOGGER = logging.getLogger("run")
+DATA_DIR = Path(os.getenv("AEGIS_DATA_DIR", ".aegis"))
+DATA_DIR.mkdir(parents=True, exist_ok=True)
 
 
-def _doctor_checks() -> List[str]:
-    failures: List[str] = []
-    try:
-        EventBus()
-    except Exception as exc:  # noqa: BLE001
-        failures.append(f"bus_init_failed:{exc}")
-    try:
-        MemoryClient().close()
-    except Exception as exc:  # noqa: BLE001
-        failures.append(f"memory_init_failed:{exc}")
-    return failures
+async def main() -> None:
+    from core.bus import EventBus
+    from core.memory import MemoryStore
+    from core.policy import PolicyEngine
+    from core.router import LLMRouter
+    from core.scheduler import Scheduler
+    from agents.warden.agent import WardenAgent
+    from agents.scribe.agent import ScribeAgent
+    from agents.forge.agent import ForgeAgent
+    from agents.loop.agent import LoopAgent
+    from agents.herald.agent import HeraldAgent
+    from interface.server import start_lens
 
+    # Infrastructure
+    bus = EventBus(log_path=DATA_DIR / "events.jsonl")
+    nats_url = os.getenv("NATS_URL", "")
+    if nats_url:
+        await bus.connect_nats(nats_url)
 
-async def _agent_listener(agent) -> None:
-    agent.bind()
-    while True:
-        await asyncio.sleep(1.0)
-
-
-def _start_lens_server() -> Tuple[Optional[object], Optional[threading.Thread]]:
-    lens_path = Path("lens/server.py")
-    if not lens_path.exists():
-        return None, None
-
-    try:
-        import uvicorn
-    except Exception:
-        print("Lens unavailable — run: pip install uvicorn fastapi")
-        return None, None
-
-    spec = importlib.util.spec_from_file_location("aegis_lens_server", lens_path)
-    if spec is None or spec.loader is None:
-        return None, None
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    app = getattr(module, "app", None)
-    if app is None:
-        return None, None
-
-    config = uvicorn.Config(app, host="127.0.0.1", port=7771, log_level="warning")
-    server = uvicorn.Server(config)
-
-    def _run() -> None:
-        server.run()
-
-    thread = threading.Thread(target=_run, name="aegis-lens", daemon=True)
-    thread.start()
-    time.sleep(0.15)
-    print("AEGIS Lens running → http://localhost:7771")
-    return server, thread
-
-
-async def _main() -> int:
-    critical = _doctor_checks()
-    if critical:
-        for item in critical:
-            LOGGER.error("startup_critical", extra={"error": item})
-        return 1
-
-    bus = EventBus()
+    memory = MemoryStore(db_path=DATA_DIR / "memory.db")
+    policy = PolicyEngine()
+    router = LLMRouter()
     scheduler = Scheduler()
-    memory = MemoryClient()
-    _router = ModelRouter()
-    outcome = OutcomeStore()
-    checkpoint = CheckpointStore(outcome=outcome)
-    provenance = ProvenanceStore()
-    state_sync = StateSyncStore()
-    anomaly = AnomalyDetector(bus=bus)
 
-    agents = []
-    for factory in (
-        lambda: WardenAgent(bus, anomaly=anomaly),
-        lambda: ScribeAgent(bus, memory=memory),
-        lambda: HeraldAgent(bus),
-        lambda: ForgeAgent(bus, outcome=outcome, checkpoint=checkpoint, provenance=provenance),
-        lambda: LoopAgent(bus, scheduler=scheduler, memory=memory, outcome=outcome, state_sync=state_sync),
-    ):
-        try:
-            agents.append(factory())
-        except Exception as exc:  # noqa: BLE001
-            LOGGER.exception("agent_init_failed", extra={"error": str(exc), "factory": str(factory)})
+    # Agents
+    warden = WardenAgent(bus, policy)
+    scribe = ScribeAgent(bus, memory)
+    forge = ForgeAgent(bus, router)
+    loop = LoopAgent(bus, scheduler)
+    herald = HeraldAgent(bus)
 
-    bus_mode = "fallback"
-    memory_mode = "sqlite"
-    print(
-        f"AEGIS running — {len(agents)} agents active — bus: {bus_mode} — memory: {memory_mode} "
-        f"— outcome:{outcome.db_path} — anomaly:active"
-    )
+    for agent in [warden, scribe, forge, loop, herald]:
+        await agent.start()
 
-    lens_server, lens_thread = _start_lens_server()
+    log.info("AEGIS v2 — 5 agents active — bus: %s — data: %s", bus.backend, DATA_DIR)
 
-    tasks: List[asyncio.Task] = [asyncio.create_task(tick(scheduler, bus, interval_seconds=1.0), name="scheduler_tick")]
-    for agent in agents:
-        tasks.append(asyncio.create_task(_agent_listener(agent), name=f"listener_{agent.name}"))
-
+    # Shutdown handler
+    loop_ref = asyncio.get_event_loop()
     stop_event = asyncio.Event()
 
-    def _request_shutdown() -> None:
+    def _shutdown(*_):
+        log.info("Shutdown signal received")
         stop_event.set()
 
-    loop = asyncio.get_running_loop()
-    loop.add_signal_handler(signal.SIGINT, _request_shutdown)
-    loop.add_signal_handler(signal.SIGTERM, _request_shutdown)
+    for sig in (signal.SIGINT, signal.SIGTERM):
+        loop_ref.add_signal_handler(sig, _shutdown)
 
-    await stop_event.wait()
+    # Start Lens dashboard + scheduler in parallel
+    await asyncio.gather(
+        start_lens(bus, memory, port=int(os.getenv("LENS_PORT", "7771"))),
+        scheduler.tick(),
+        stop_event.wait(),
+        return_exceptions=True,
+    )
 
-    for task in tasks:
-        task.cancel()
-    await asyncio.gather(*tasks, return_exceptions=True)
-
-    if lens_server is not None:
-        lens_server.should_exit = True
-        if lens_thread is not None:
-            lens_thread.join(timeout=2.0)
-
-    bus.replay()
-    memory.close()
-    print("AEGIS shutdown clean")
-    return 0
-
-
-def main() -> None:
-    code = asyncio.run(_main())
-    raise SystemExit(code)
+    # Graceful shutdown
+    for agent in [warden, scribe, forge, loop, herald]:
+        await agent.stop()
+    await bus.close()
+    log.info("AEGIS shutdown complete")
 
 
 if __name__ == "__main__":
-    main()
+    asyncio.run(main())
