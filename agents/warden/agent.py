@@ -13,6 +13,7 @@ import re
 from typing import Any, Dict, List
 
 from agents.common import AgentOutput, BaseAgent
+from kernel.anomaly import AnomalyDetector
 from kernel.events import AegisEvent, EventType
 
 DESTRUCTIVE_PATTERNS = [
@@ -45,9 +46,10 @@ class WardenAgent(BaseAgent):
     name = "warden"
     subscriptions = [EventType.HUMAN_INTENT.value, EventType.SYSTEM_RECOVER.value]
 
-    def __init__(self, bus, provider=None, **kwargs) -> None:
+    def __init__(self, bus, provider=None, anomaly: AnomalyDetector | None = None, **kwargs) -> None:
         super().__init__(bus, provider=provider, **kwargs)
         self.consult = bool(kwargs.get("consult", False))
+        self.anomaly = anomaly or AnomalyDetector(bus=bus)
 
     def evaluate(self, text: str) -> Dict[str, Any]:
         findings: List[Dict[str, str]] = []
@@ -82,6 +84,17 @@ class WardenAgent(BaseAgent):
             issues.append("physical operations require HUMAN_REQUIRED routing")
         return {"allowed": not issues, "issues": issues}
     def on_wake(self, event: AegisEvent) -> AgentOutput:
+        payload_hash = self.anomaly.hash_payload(event.payload)
+        self.anomaly.record_action(
+            event.trace_id,
+            event.agent,
+            event.event_type.value,
+            event.policy_state,
+            payload_hash,
+        )
+        report = self.anomaly.check_window()
+        if report is not None:
+            self.anomaly.on_anomaly(report)
         text = " ".join([event.intent_ref or "", str(event.payload.get("intent", "") or "")])
         verdict = self.evaluate(text)
 

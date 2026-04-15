@@ -8,6 +8,7 @@ export default function Page() {
         <Link href="/wealth">wealth</Link>
         <Link href="/memory">memory</Link>
         <Link href="/status">status</Link>
+        <Link href="/outcome">outcome</Link>
       </nav>
       <noscript>
         <p>JavaScript is disabled. Live updates are unavailable, but static navigation works.</p>
