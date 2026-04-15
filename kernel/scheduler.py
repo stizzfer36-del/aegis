@@ -1,15 +1,20 @@
 from __future__ import annotations
 
+import asyncio
+import logging
 from dataclasses import dataclass
-from typing import Dict, List, Set, Tuple
+from typing import Dict, List, Set
 
+from kernel.bus import EventBus
 from kernel.events import AegisEvent
+
+LOGGER = logging.getLogger(__name__)
 
 
 @dataclass
 class QueueItem:
     key: str
-    priority: int
+    priority: float
     event: AegisEvent
     resume_point: str = "start"
     retries: int = 0
@@ -25,7 +30,7 @@ class Scheduler:
         if item.key in self._active or any(existing.key == item.key for existing in self._queue):
             return False
         self._queue.append(item)
-        self._queue.sort(key=lambda x: x.priority)
+        self._queue.sort(key=lambda x: (-x.priority, x.key))
         return True
 
     def wake_next(self) -> QueueItem | None:
@@ -46,5 +51,29 @@ class Scheduler:
             self.sleep(item.key, resume_point="failed")
             return False
         self._active.discard(item.key)
-        item.priority = max(0, item.priority - 1)
+        item.priority = max(0.0, item.priority - 0.1)
         return self.enqueue(item)
+
+
+async def tick(scheduler: Scheduler, bus: EventBus, interval_seconds: float = 1.0) -> None:
+    """
+    Drives the scheduler from run.py.
+    Every interval_seconds: pops the next ready item and publishes its event to the bus.
+    Runs until cancelled.
+    """
+    try:
+        while True:
+            item = scheduler.wake_next()
+            if item:
+                try:
+                    bus.publish(item.event)
+                except Exception as exc:  # noqa: BLE001
+                    LOGGER.exception(
+                        "scheduler_tick_publish_failed",
+                        extra={"event": {"key": item.key, "error": str(exc)}},
+                    )
+                    scheduler.sleep(item.key, resume_point="publish_failed")
+            await asyncio.sleep(interval_seconds)
+    except asyncio.CancelledError:
+        LOGGER.info("scheduler_tick_cancelled")
+        raise

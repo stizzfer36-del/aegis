@@ -26,7 +26,7 @@ class HeraldAgent(BaseAgent):
     def bridge_for(self, trace_id: str) -> HeraldBridge:
         bridge = self._bridges.get(trace_id)
         if bridge is None:
-            bridge = HeraldBridge(trace_id=trace_id)
+            bridge = HeraldBridge(trace_id=trace_id, bus=self.bus)
             self._bridges[trace_id] = bridge
         return bridge
 

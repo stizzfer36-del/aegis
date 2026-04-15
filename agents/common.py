@@ -19,8 +19,8 @@ class BaseAgent:
     name = "base"
     subscriptions: List[str] = []
 
-    def __init__(self, bus: EventBus, provider: Optional[Any] = None, **kwargs: Any) -> None:
-        self.bus = bus
+    def __init__(self, bus: Optional[EventBus] = None, provider: Optional[Any] = None, **kwargs: Any) -> None:
+        self.bus = bus or EventBus()
         self.provider = provider
 
     def bind(self) -> None:

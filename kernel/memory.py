@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import math
 import re
 import sqlite3
@@ -10,6 +11,7 @@ from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 _TOKEN_RE = re.compile(r"[a-zA-Z0-9_]+")
+LOGGER = logging.getLogger(__name__)
 
 
 def _tokenize(text: str) -> List[str]:
@@ -89,66 +91,28 @@ class MemoryClient:
         return [self._row_to_dict(r) for r in rows]
 
     def search(self, query: str, k: int = 5) -> List[Dict[str, Any]]:
-        q_tokens = Counter(_tokenize(query))
-        if not q_tokens:
+        cleaned_query = (query or "").strip()
+        if not cleaned_query:
             return []
-        with self._lock:
-            total = self._conn.execute("SELECT COUNT(*) FROM memory").fetchone()[0] or 0
-        if total == 0:
+        try:
+            needle = f"%{cleaned_query.lower()}%"
+            with self._lock:
+                rows = self._conn.execute(
+                    """
+                    SELECT id, trace_id, topic, preference, content, provenance
+                    FROM memory
+                    WHERE lower(topic) LIKE ?
+                       OR lower(preference) LIKE ?
+                       OR lower(content) LIKE ?
+                    ORDER BY created_at DESC
+                    LIMIT ?
+                    """,
+                    (needle, needle, needle, k),
+                ).fetchall()
+            return [self._row_to_dict(r) for r in rows]
+        except sqlite3.Error as exc:
+            LOGGER.exception("memory_search_failed", extra={"error": str(exc)})
             return []
-
-        placeholders = ",".join("?" for _ in q_tokens)
-        with self._lock:
-            df_rows = self._conn.execute(f"SELECT token, COUNT(DISTINCT memory_id) FROM memory_tokens WHERE token IN ({placeholders}) GROUP BY token", list(q_tokens.keys())).fetchall()
-            cand_rows = self._conn.execute(f"SELECT memory_id, token, freq FROM memory_tokens WHERE token IN ({placeholders})", list(q_tokens.keys())).fetchall()
-        df = {tok: n for tok, n in df_rows}
-
-        idf = {tok: math.log((total + 1) / (df.get(tok, 0) + 1)) + 1.0 for tok in q_tokens}
-        q_vec = {tok: freq * idf[tok] for tok, freq in q_tokens.items()}
-        q_norm = math.sqrt(sum(v * v for v in q_vec.values())) or 1.0
-
-        per_doc: Dict[int, Dict[str, float]] = {}
-        for mid, tok, freq in cand_rows:
-            per_doc.setdefault(mid, {})[tok] = freq * idf[tok]
-
-        doc_ids = list(per_doc.keys())
-        if not doc_ids:
-            return []
-        doc_placeholders = ",".join("?" for _ in doc_ids)
-        with self._lock:
-            doc_tok_rows = self._conn.execute(f"SELECT memory_id, token, freq FROM memory_tokens WHERE memory_id IN ({doc_placeholders})", doc_ids).fetchall()
-
-        mean_idf = sum(idf.values()) / len(idf)
-        doc_norm: Dict[int, float] = {}
-        doc_acc: Dict[int, float] = {}
-        for mid, tok, freq in doc_tok_rows:
-            weight = freq * (idf.get(tok, mean_idf))
-            doc_acc[mid] = doc_acc.get(mid, 0.0) + weight * weight
-        for mid, acc in doc_acc.items():
-            doc_norm[mid] = math.sqrt(acc) or 1.0
-
-        scored: List[Tuple[float, int]] = []
-        for mid, dv in per_doc.items():
-            dot = sum(q_vec[t] * dv.get(t, 0.0) for t in q_vec)
-            score = dot / (q_norm * doc_norm[mid])
-            scored.append((score, mid))
-        scored.sort(reverse=True)
-
-        top_ids = [mid for _, mid in scored[:k]]
-        if not top_ids:
-            return []
-        id_placeholders = ",".join("?" for _ in top_ids)
-        with self._lock:
-            rows = self._conn.execute(f"SELECT id, trace_id, topic, preference, content, provenance FROM memory WHERE id IN ({id_placeholders})", top_ids).fetchall()
-        by_id = {r[0]: r for r in rows}
-        out: List[Dict[str, Any]] = []
-        for score, mid in scored[:k]:
-            r = by_id.get(mid)
-            if r is not None:
-                d = self._row_to_dict(r)
-                d["score"] = round(float(score), 6)
-                out.append(d)
-        return out
 
     def summarize(self, trace_id: str) -> Dict[str, Any]:
         rows = self.query(trace_id=trace_id)
