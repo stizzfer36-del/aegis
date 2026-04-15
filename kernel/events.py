@@ -15,6 +15,7 @@ class EventType(str, Enum):
     REMEMBER_CANDIDATE = "remember.candidate"
     WEALTH_GENERATED = "wealth.generated"
     POLICY_DECISION = "policy.decision"
+    SKILL_PROMOTED = "skill.promoted"
     SYSTEM_RECOVER = "system.recover"
 
 

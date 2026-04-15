@@ -4,12 +4,14 @@ import hashlib
 import json
 import logging
 import threading
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, Optional
 
 from agents.common import AgentOutput, BaseAgent
 from kernel.bus import EventBus
 from kernel.events import AegisEvent, Cost, EventType, PolicyState, WealthImpact, now_utc
+from kernel.memory import MemoryClient
 from kernel.scheduler import QueueItem, Scheduler
 
 LOGGER = logging.getLogger(__name__)
@@ -21,6 +23,8 @@ class LoopAgent(BaseAgent):
         EventType.HUMAN_INTENT.value,
         EventType.AGENT_THINKING.value,
         EventType.AGENT_MAP_CONSEQUENCE.value,
+        EventType.POLICY_DECISION.value,
+        EventType.SKILL_PROMOTED.value,
     ]
 
     def __init__(
@@ -29,14 +33,23 @@ class LoopAgent(BaseAgent):
         provider: Optional[Any] = None,
         scheduler: Optional[Scheduler] = None,
         backlog_path: str = ".aegis/backlog.jsonl",
+        trace_map_path: str = ".aegis/trace_map.jsonl",
+        promoted_skills_path: str = ".aegis/promoted_skills.jsonl",
+        memory: Optional[MemoryClient] = None,
         **kwargs: Any,
     ) -> None:
         super().__init__(bus or EventBus(), provider=provider, **kwargs)
         self.scheduler = scheduler or Scheduler()
+        self.memory = memory
         self.backlog_path = Path(backlog_path)
+        self.trace_map_path = Path(trace_map_path)
+        self.promoted_skills_path = Path(promoted_skills_path)
         self.backlog_path.parent.mkdir(parents=True, exist_ok=True)
+        self.trace_map_path.parent.mkdir(parents=True, exist_ok=True)
+        self.promoted_skills_path.parent.mkdir(parents=True, exist_ok=True)
         self._lock = threading.Lock()
-        self._trace_to_key: Dict[str, str] = {}
+        self._trace_to_key: Dict[str, str] = self._load_trace_map()
+        self._key_to_event: Dict[str, AegisEvent] = {}
 
     def on_wake(self, event: AegisEvent) -> AgentOutput:
         if event.event_type == EventType.HUMAN_INTENT:
@@ -45,6 +58,10 @@ class LoopAgent(BaseAgent):
             return self._on_agent_thinking(event)
         if event.event_type == EventType.AGENT_MAP_CONSEQUENCE:
             return self._on_map_consequence(event)
+        if event.event_type == EventType.POLICY_DECISION:
+            return self._on_policy_decision(event)
+        if event.event_type == EventType.SKILL_PROMOTED:
+            return self._on_skill_promoted(event)
         return AgentOutput(agent=self.name, summary="ignored event", next_event_type=EventType.AGENT_THINKING.value, details={})
 
     def _on_human_intent(self, event: AegisEvent) -> AgentOutput:
@@ -58,7 +75,7 @@ class LoopAgent(BaseAgent):
 
         with self._lock:
             status = self._latest_status_by_key().get(key)
-            if status in {"pending", "running"}:
+            if status in {"pending", "running", "retry"}:
                 return AgentOutput(agent=self.name, summary="duplicate skipped", next_event_type=EventType.AGENT_THINKING.value, details={"key": key})
 
             queued = self.scheduler.enqueue(
@@ -77,9 +94,10 @@ class LoopAgent(BaseAgent):
                         policy_state=PolicyState.APPROVED,
                         payload={
                             "task_type": "document",
-                            "spec": intent,
+                            "spec": self._build_spec(intent),
                             "output_path": str((Path("/tmp") / f"{key}.txt").resolve()),
                             "task_key": key,
+                            "priority": float(priority),
                         },
                     ),
                 )
@@ -97,6 +115,8 @@ class LoopAgent(BaseAgent):
             return AgentOutput(agent=self.name, summary="no pending tasks", next_event_type=EventType.AGENT_THINKING.value, details={})
 
         self._trace_to_key[item.event.trace_id] = item.key
+        self._key_to_event[item.key] = item.event
+        self._persist_trace_map(item.event.trace_id, item.key)
         self._append_backlog({"key": item.key, "status": "running", "retries": item.retries, "priority": float(item.priority), "trace_id": item.event.trace_id})
         self.bus.publish(item.event)
         return AgentOutput(agent=self.name, summary="dispatched to forge", next_event_type=EventType.AGENT_EXECUTE.value, details={"key": item.key})
@@ -119,10 +139,43 @@ class LoopAgent(BaseAgent):
             consequence_summary="loop recorded completed task",
             wealth_impact=WealthImpact(type="neutral", value=0.0),
             policy_state=PolicyState.APPROVED,
-            payload={"task_key": key, "summary": event.consequence_summary},
+            payload={"task_key": key, "summary": event.consequence_summary, "output": event.payload.get("stdout") or event.payload.get("final_text") or ""},
         )
         self.bus.publish(remember_event)
         return AgentOutput(agent=self.name, summary="task marked done", next_event_type=EventType.REMEMBER_CANDIDATE.value, details={"key": key})
+
+    def _on_policy_decision(self, event: AegisEvent) -> AgentOutput:
+        if event.policy_state != PolicyState.REJECTED:
+            return AgentOutput(agent=self.name, summary="policy decision ignored", next_event_type=EventType.AGENT_THINKING.value, details={})
+        key = self._trace_to_key.get(event.trace_id)
+        if not key:
+            key = str(event.payload.get("task_key") or "")
+        if not key:
+            return AgentOutput(agent=self.name, summary="rejected without key", next_event_type=EventType.AGENT_THINKING.value, details={})
+
+        retries = self.mark_retry(key)
+        if retries >= 4:
+            self.scheduler.sleep(key, resume_point="failed")
+            self._append_backlog({"key": key, "status": "failed", "retries": retries, "trace_id": event.trace_id})
+            return AgentOutput(agent=self.name, summary="task failed after retries", next_event_type=EventType.AGENT_THINKING.value, details={"key": key, "retries": retries})
+
+        self.scheduler.sleep(key, resume_point="retry")
+        original_event = self._key_to_event.get(key)
+        if original_event is not None:
+            self.scheduler.enqueue(QueueItem(key=key, priority=float(original_event.payload.get("priority", 1.0)), event=original_event, retries=retries))
+        self._append_backlog({"key": key, "status": "pending", "retries": retries, "trace_id": event.trace_id})
+        return AgentOutput(agent=self.name, summary="task re-queued after policy rejection", next_event_type=EventType.AGENT_THINKING.value, details={"key": key, "retries": retries})
+
+    def _on_skill_promoted(self, event: AegisEvent) -> AgentOutput:
+        row = {
+            "topic": event.payload.get("topic") or event.intent_ref,
+            "trace_id": event.trace_id,
+            "agent": event.agent,
+            "ts": datetime.now(timezone.utc).isoformat(),
+        }
+        with self.promoted_skills_path.open("a", encoding="utf-8") as handle:
+            handle.write(json.dumps(row, ensure_ascii=False) + "\n")
+        return AgentOutput(agent=self.name, summary="skill promotion recorded", next_event_type=EventType.SKILL_PROMOTED.value, details=row)
 
     def mark_retry(self, key: str) -> int:
         with self._lock:
@@ -163,6 +216,41 @@ class LoopAgent(BaseAgent):
             if row.get("key") == key:
                 retries = int(row.get("retries", retries))
         return retries
+
+    def _persist_trace_map(self, trace_id: str, key: str) -> None:
+        with self.trace_map_path.open("a", encoding="utf-8") as handle:
+            handle.write(json.dumps({"trace_id": trace_id, "key": key}, ensure_ascii=False) + "\n")
+
+    def _load_trace_map(self) -> Dict[str, str]:
+        mapping: Dict[str, str] = {}
+        if not self.trace_map_path.exists():
+            return mapping
+        for line in self.trace_map_path.read_text(encoding="utf-8").splitlines():
+            try:
+                row = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            trace_id = str(row.get("trace_id") or "")
+            key = str(row.get("key") or "")
+            if trace_id and key:
+                mapping[trace_id] = key
+        return mapping
+
+    def _build_spec(self, intent: str) -> str:
+        if not self.memory:
+            return intent
+        prior = self.memory.search(intent, k=3)
+        if not prior:
+            return intent
+        lines = ["PRIOR CONTEXT:"]
+        for row in prior:
+            content = row.get("content", {})
+            summary = content.get("summary") if isinstance(content, dict) else str(content)
+            lines.append(f"- [{row.get('topic')}] {summary}")
+        lines.append("")
+        lines.append("CURRENT TASK:")
+        lines.append(intent)
+        return "\n".join(lines)
 
     @staticmethod
     def _task_key(intent: str) -> str:

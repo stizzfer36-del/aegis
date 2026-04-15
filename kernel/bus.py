@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 from typing import Callable, Dict, List, Optional
 
@@ -38,5 +39,26 @@ class EventBus:
         return events
 
     def latest_trace(self) -> Optional[str]:
-        events = self.replay()
-        return events[-1].trace_id if events else None
+        if not self.log_path.exists():
+            return None
+        with self.log_path.open("rb") as handle:
+            handle.seek(0, os.SEEK_END)
+            position = handle.tell() - 1
+            if position < 0:
+                return None
+            chunk = bytearray()
+            while position >= 0:
+                handle.seek(position)
+                byte = handle.read(1)
+                if byte == b"\n" and chunk:
+                    break
+                if byte != b"\n":
+                    chunk.extend(byte)
+                position -= 1
+            if not chunk:
+                return None
+            line = bytes(reversed(chunk)).decode("utf-8")
+        try:
+            return str(json.loads(line).get("trace_id") or "") or None
+        except json.JSONDecodeError:
+            return None
