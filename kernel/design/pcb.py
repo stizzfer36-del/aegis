@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Dict
 
 
 class PCBDesigner:
@@ -16,7 +15,7 @@ class PCBDesigner:
         path.write_text("(kicad_pcb (version 202311))\n", encoding="utf-8")
         return path
 
-    def run_drc(self) -> Dict[str, str]:
+    def run_drc(self) -> dict[str, str]:
         return {"status": "ok"}
 
     def export_gerber(self, out_dir: Path) -> Path:

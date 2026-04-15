@@ -1,11 +1,10 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Dict
 
 
 class CADDesigner:
-    def generate_enclosure(self, dimensions: Dict[str, float], out_dir: Path) -> Path:
+    def generate_enclosure(self, dimensions: dict[str, float], out_dir: Path) -> Path:
         out_dir.mkdir(parents=True, exist_ok=True)
         path = out_dir / "enclosure.scad"
         path.write_text(f"cube([{dimensions.get('x',10)},{dimensions.get('y',10)},{dimensions.get('z',10)}]);\n", encoding="utf-8")

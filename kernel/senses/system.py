@@ -3,7 +3,7 @@ from __future__ import annotations
 import platform
 import socket
 import time
-from typing import Any, Dict, List
+from typing import Any
 
 try:
     import psutil
@@ -11,15 +11,15 @@ except ImportError:  # pragma: no cover
     psutil = None  # type: ignore
 
 
-def _missing() -> Dict[str, Any]:
+def _missing() -> dict[str, Any]:
     return {"error": "psutil not installed — pip install psutil"}
 
 
-def sys_info() -> Dict[str, Any]:
+def sys_info() -> dict[str, Any]:
     if psutil is None:
         return _missing()
     vm = psutil.virtual_memory()
-    disks: List[Dict[str, Any]] = []
+    disks: list[dict[str, Any]] = []
     for part in psutil.disk_partitions(all=False):
         try:
             usage = psutil.disk_usage(part.mountpoint)
@@ -29,10 +29,10 @@ def sys_info() -> Dict[str, Any]:
     return {"cpu_percent": psutil.cpu_percent(interval=0.1), "ram": {"used": vm.used, "total": vm.total, "percent": vm.percent, "free": vm.available}, "disk": disks, "uptime_seconds": int(time.time() - psutil.boot_time()), "hostname": socket.gethostname(), "os": platform.platform()}
 
 
-def process_list() -> Dict[str, Any]:
+def process_list() -> dict[str, Any]:
     if psutil is None:
         return _missing()
-    procs: List[Dict[str, Any]] = []
+    procs: list[dict[str, Any]] = []
     for p in psutil.process_iter(attrs=["pid", "name", "cpu_percent", "memory_info", "status"]):
         info = p.info
         mem = float(getattr(info.get("memory_info"), "rss", 0.0)) / (1024 * 1024)
@@ -40,13 +40,13 @@ def process_list() -> Dict[str, Any]:
     return {"processes": sorted(procs, key=lambda x: x["cpu_percent"], reverse=True)[:20]}
 
 
-def network_interfaces() -> Dict[str, Any]:
+def network_interfaces() -> dict[str, Any]:
     if psutil is None:
         return _missing()
     stats = psutil.net_if_stats()
     addrs = psutil.net_if_addrs()
     counters = psutil.net_io_counters(pernic=True)
-    interfaces: List[Dict[str, Any]] = []
+    interfaces: list[dict[str, Any]] = []
     for name, nic_addrs in addrs.items():
         ip = ""
         mac = ""
@@ -61,7 +61,7 @@ def network_interfaces() -> Dict[str, Any]:
     return {"interfaces": interfaces}
 
 
-def battery_status() -> Dict[str, Any]:
+def battery_status() -> dict[str, Any]:
     if psutil is None:
         return _missing()
     battery = psutil.sensors_battery()

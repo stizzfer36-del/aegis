@@ -1,72 +1,49 @@
-"""Herald: session continuity across channels plus hardware intent routing."""
-
 from __future__ import annotations
 
-from typing import Any, Dict
+import json
 
-from agents.common import AgentOutput, BaseAgent
-from agents.herald.bridge import HeraldBridge
-from kernel.events import AegisEvent, EventType
-from kernel.jailbreak.engine import JailbreakEngine
-from kernel.registry import CapabilityRegistry
+from agents.common import AgentBase, AgentOutput
+from kernel.core.events import AegisEvent, EventType
 
 
-class HeraldAgent(BaseAgent):
+class HeraldAgent(AgentBase):
     name = "herald"
-    subscriptions = [EventType.HUMAN_INTENT.value]
+    SUBSCRIBED_EVENTS = [EventType.HUMAN_INTENT]
 
-    def __init__(self, bus, provider=None, **kwargs) -> None:
-        super().__init__(bus, provider=provider, **kwargs)
-        self._bridges: Dict[str, HeraldBridge] = {}
-        self.registry = CapabilityRegistry()
-        self.jailbreak_engine = JailbreakEngine()
+    SYSTEM_PROMPT = """
+  You are Herald, the intent classifier for AEGIS.
+  Given a raw user intent, extract:
+  - canonical_intent: cleaned, normalized version of the request
+  - domain: one of [code, research, memory, system, creative, analysis, unknown]
+  - complexity: one of [simple, moderate, complex]
+  - requires_tools: true/false
+  - summary: one sentence description
 
-    def bridge_for(self, trace_id: str) -> HeraldBridge:
-        bridge = self._bridges.get(trace_id)
-        if bridge is None:
-            bridge = HeraldBridge(trace_id=trace_id, bus=self.bus)
-            self._bridges[trace_id] = bridge
-        return bridge
+  Respond ONLY in valid JSON with those exact keys.
+  """
 
     def on_wake(self, event: AegisEvent) -> AgentOutput:
-        channel = event.payload.get("channel", "terminal")
-        external_id = event.payload.get("external_id") or event.trace_id
-        bridge = self.bridge_for(event.trace_id)
-        if channel == "telegram":
-            bridge.ingest_telegram(str(external_id))
-        elif channel == "http":
-            bridge.state.link("http", str(external_id))
-        else:
-            bridge.ingest_terminal(str(external_id))
+        try:
+            raw = self._chat(
+                self.SYSTEM_PROMPT,
+                event.intent_ref,
+                model="openai/gpt-4o-mini",
+                max_tokens=512,
+            )
+            parsed = json.loads(raw)
+            return AgentOutput(
+                summary=parsed.get("summary", event.intent_ref[:100]),
+                details=parsed,
+            )
+        except Exception:
+            return AgentOutput(
+                summary=event.intent_ref[:100],
+                details={
+                    "domain": "unknown",
+                    "complexity": "moderate",
+                    "requires_tools": True,
+                },
+            )
 
-        intent = f"{event.intent_ref} {event.payload.get('intent', '')}".strip().lower()
-        details = {"channel": channel, "trace_id": event.trace_id, "channels": dict(bridge.state.channels)}
-
-        if intent.startswith("connect "):
-            discovered = self.registry.auto_discover()
-            details["devices"] = [d["id"] for d in discovered]
-        elif "scan hardware" in intent:
-            discovered = self.registry.auto_discover()
-            details["scan_count"] = len(discovered)
-        elif "what can you do" in intent:
-            details["capabilities"] = self.registry.list_all_capabilities()
-        elif intent.startswith("jailbreak"):
-            parts = intent.split()
-            target = parts[-1] if len(parts) > 1 else "embedded"
-            plan = self.jailbreak_engine.plan(target)
-            details["jailbreak_plan"] = [s.step_id for s in plan.steps]
-        elif intent.startswith("design "):
-            details["design_request"] = intent
-        elif intent.startswith("flash "):
-            details["flash_request"] = intent
-
-        return AgentOutput(
-            agent=self.name,
-            summary=f"unified session maintained for {channel}",
-            next_event_type=EventType.AGENT_THINKING.value,
-            details=details,
-        )
-
-    def briefing(self, trace_id: str) -> Dict[str, Any]:
-        bridge = self.bridge_for(trace_id)
-        return {"trace_id": trace_id, "channels": dict(bridge.state.channels)}
+    def on_event(self, event: AegisEvent) -> None:
+        _ = self.on_wake(event)

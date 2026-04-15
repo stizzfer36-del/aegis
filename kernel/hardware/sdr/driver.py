@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-from typing import Dict
-
 from kernel.hardware.base import BaseDriver
 from kernel.hardware.sdr.safety import SDRSafetyGate, TransmissionRequest
 from kernel.memory import MemoryClient
@@ -16,7 +14,7 @@ class SDRDriver(BaseDriver):
         super().__init__(protocol, memory=memory)
         self.safety = SDRSafetyGate(self.memory)
 
-    def tx(self, payload: Dict[str, float | int | bool | str]) -> bool:
+    def tx(self, payload: dict[str, float | int | bool | str]) -> bool:
         req = TransmissionRequest(
             frequency_mhz=float(payload["frequency_mhz"]),
             duration_seconds=int(payload.get("duration_seconds", 1)),

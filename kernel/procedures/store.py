@@ -4,7 +4,6 @@ import json
 import sqlite3
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict, List, Optional
 
 
 @dataclass
@@ -13,10 +12,10 @@ class ProcedureRecord:
     device_class: str
     firmware_version: str
     os_version: str
-    steps: List[Dict[str, str]]
+    steps: list[dict[str, str]]
     success_count: int
     failure_count: int
-    failure_modes: List[str]
+    failure_modes: list[str]
     last_verified: str
     contributor: str
     hash: str
@@ -87,7 +86,7 @@ class ProcedureStore:
                 record.failure_modes.append(failure_mode)
         self.record(record)
 
-    def lookup(self, device_class: str, capability: str, firmware: str) -> Optional[ProcedureRecord]:
+    def lookup(self, device_class: str, capability: str, firmware: str) -> ProcedureRecord | None:
         rows = self.conn.execute(
             "SELECT procedure_id, device_class, firmware_version, os_version, steps, success_count, failure_count, failure_modes, last_verified, contributor, hash FROM procedures WHERE device_class=? AND firmware_version=?",
             (device_class, firmware),

@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-from typing import Dict
-
 from kernel.hardware.base import BaseDriver, DriverResponse
 from kernel.protocols.serial_cdc import Serial_cdcProtocol
 from kernel.protocols.usb_dfu import Usb_dfuProtocol
@@ -15,7 +13,7 @@ class ESP32Driver(BaseDriver):
         super().__init__(serial_protocol)
         self.dfu_protocol = dfu_protocol
 
-    def execute(self, capability: str, payload: Dict[str, str]) -> DriverResponse:
+    def execute(self, capability: str, payload: dict[str, str]) -> DriverResponse:
         if capability == "flash_firmware":
             data = self.dfu_protocol.send(payload.get("firmware", "flash"), expect_response=True)
             return DriverResponse(ok=True, data={"raw": (data or b"").decode("utf-8")})

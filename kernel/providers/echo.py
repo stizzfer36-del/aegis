@@ -5,7 +5,6 @@ from __future__ import annotations
 import json
 import re
 import uuid
-from typing import List, Optional
 
 from .base import Completion, Message, ToolCall, ToolSpec
 
@@ -18,11 +17,11 @@ class EchoProvider:
 
     def complete(
         self,
-        messages: List[Message],
-        tools: Optional[List[ToolSpec]] = None,
+        messages: list[Message],
+        tools: list[ToolSpec] | None = None,
         max_tokens: int = 1024,
         temperature: float = 0.2,
-        system: Optional[str] = None,
+        system: str | None = None,
     ) -> Completion:
         user_text = ""
         for m in reversed(messages):
@@ -31,7 +30,7 @@ class EchoProvider:
                 break
 
         tool_names = {t.name for t in (tools or [])}
-        tool_calls: List[ToolCall] = []
+        tool_calls: list[ToolCall] = []
         text = ""
 
         m = re.match(r"\s*shell:\s*(.+)", user_text, re.DOTALL)

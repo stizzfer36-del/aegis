@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import shutil
 from dataclasses import dataclass
-from typing import List
 
 
 @dataclass
@@ -77,8 +76,8 @@ _TOOL_GROUPS = {
 }
 
 
-def get_available_tools() -> List[SoftwareToolBinding]:
-    items: List[SoftwareToolBinding] = []
+def get_available_tools() -> list[SoftwareToolBinding]:
+    items: list[SoftwareToolBinding] = []
     for binary, description in _TOOL_GROUPS.items():
         path = shutil.which(binary)
         items.append(SoftwareToolBinding(name=binary, description=description, available=bool(path), path=path))

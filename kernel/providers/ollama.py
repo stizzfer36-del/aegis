@@ -5,7 +5,6 @@ import os
 import urllib.error
 import urllib.request
 import uuid
-from typing import List, Optional
 
 from .base import Completion, Message, ProviderError, ProviderUnavailable, ToolCall, ToolSpec
 
@@ -13,7 +12,7 @@ from .base import Completion, Message, ProviderError, ProviderUnavailable, ToolC
 class OllamaProvider:
     name = "ollama"
 
-    def __init__(self, model: str = "llama3.1:8b", base_url: Optional[str] = None) -> None:
+    def __init__(self, model: str = "llama3.1:8b", base_url: str | None = None) -> None:
         self.model = model
         self.base_url = (base_url or os.getenv("OLLAMA_URL") or "http://localhost:11434").rstrip("/")
         try:
@@ -22,7 +21,7 @@ class OllamaProvider:
         except Exception as exc:  # noqa: BLE001
             raise ProviderUnavailable(f"ollama not reachable at {self.base_url}: {exc}") from exc
 
-    def complete(self, messages: List[Message], tools: Optional[List[ToolSpec]] = None, max_tokens: int = 1024, temperature: float = 0.2, system: Optional[str] = None) -> Completion:
+    def complete(self, messages: list[Message], tools: list[ToolSpec] | None = None, max_tokens: int = 1024, temperature: float = 0.2, system: str | None = None) -> Completion:
         api_messages = []
         if system:
             api_messages.append({"role": "system", "content": system})
@@ -46,7 +45,7 @@ class OllamaProvider:
 
         msg = body.get("message", {})
         text = msg.get("content", "")
-        tool_calls: List[ToolCall] = []
+        tool_calls: list[ToolCall] = []
         for tc in msg.get("tool_calls") or []:
             fn = tc.get("function", {})
             tool_calls.append(ToolCall(id="tc_" + uuid.uuid4().hex[:8], name=fn.get("name", ""), arguments=fn.get("arguments") or {}))

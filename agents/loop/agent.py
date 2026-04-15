@@ -1,289 +1,75 @@
 from __future__ import annotations
 
-import hashlib
 import json
-import logging
-import threading
-from datetime import datetime, timezone
-from pathlib import Path
-from typing import Any, Dict, Optional
 
-from agents.common import AgentOutput, BaseAgent
-from kernel.bus import EventBus
-from kernel.events import AegisEvent, Cost, EventType, PolicyState, WealthImpact, now_utc
-from kernel.memory import MemoryClient
-from kernel.outcome import OutcomeStore
-from kernel.scheduler import QueueItem, Scheduler
-from kernel.state_sync import StateSyncStore
-
-LOGGER = logging.getLogger(__name__)
+from agents.common import AgentBase, AgentOutput
+from kernel.core.events import AegisEvent, EventType
 
 
-class LoopAgent(BaseAgent):
+class LoopAgent(AgentBase):
     name = "loop"
-    subscriptions = [
-        EventType.HUMAN_INTENT.value,
-        EventType.AGENT_THINKING.value,
-        EventType.AGENT_MAP_CONSEQUENCE.value,
-        EventType.POLICY_DECISION.value,
-        EventType.SKILL_PROMOTED.value,
-    ]
+    SUBSCRIBED_EVENTS = [EventType.AGENT_DESIGN]
 
     def __init__(
         self,
-        bus: Optional[EventBus] = None,
-        provider: Optional[Any] = None,
-        scheduler: Optional[Scheduler] = None,
-        backlog_path: str = ".aegis/backlog.jsonl",
-        trace_map_path: str = ".aegis/trace_map.jsonl",
-        promoted_skills_path: str = ".aegis/promoted_skills.jsonl",
-        memory: Optional[MemoryClient] = None,
-        outcome: Optional[OutcomeStore] = None,
-        state_sync: Optional[StateSyncStore] = None,
-        **kwargs: Any,
-    ) -> None:
-        super().__init__(bus or EventBus(), provider=provider, **kwargs)
-        self.scheduler = scheduler or Scheduler()
+        bus,
+        name,
+        provider,
+        scheduler=None,
+        memory=None,
+        outcome=None,
+        state_sync=None,
+    ):
+        super().__init__(bus, name, provider)
+        self.scheduler = scheduler
         self.memory = memory
-        self.outcome = outcome or OutcomeStore()
-        self.state_sync = state_sync or StateSyncStore()
-        self.backlog_path = Path(backlog_path)
-        self.trace_map_path = Path(trace_map_path)
-        self.promoted_skills_path = Path(promoted_skills_path)
-        self.backlog_path.parent.mkdir(parents=True, exist_ok=True)
-        self.trace_map_path.parent.mkdir(parents=True, exist_ok=True)
-        self.promoted_skills_path.parent.mkdir(parents=True, exist_ok=True)
-        self._lock = threading.Lock()
-        self._trace_to_key: Dict[str, str] = self._load_trace_map()
-        self._key_to_event: Dict[str, AegisEvent] = {}
+        self.outcome = outcome
+        self.state_sync = state_sync
+
+    SYSTEM_PROMPT = """
+  You are Loop, the planning agent for AEGIS.
+  Given a user intent, produce a concrete execution plan.
+  Break the intent into 3-7 discrete, actionable steps.
+  Each step should be a single clear instruction for an execution agent.
+
+  Respond ONLY in valid JSON:
+  {
+    "plan": ["step 1", "step 2", ...],
+    "estimated_steps": <int>,
+    "approach": "<brief description of strategy>",
+    "tools_needed": ["shell", "write_file", ...]
+  }
+  """
 
     def on_wake(self, event: AegisEvent) -> AgentOutput:
-        if event.event_type == EventType.HUMAN_INTENT:
-            return self._on_human_intent(event)
-        if event.event_type == EventType.AGENT_THINKING:
-            return self._on_agent_thinking(event)
-        if event.event_type == EventType.AGENT_MAP_CONSEQUENCE:
-            return self._on_map_consequence(event)
-        if event.event_type == EventType.POLICY_DECISION:
-            return self._on_policy_decision(event)
-        if event.event_type == EventType.SKILL_PROMOTED:
-            return self._on_skill_promoted(event)
-        return AgentOutput(agent=self.name, summary="ignored event", next_event_type=EventType.AGENT_THINKING.value, details={})
-
-    def _on_human_intent(self, event: AegisEvent) -> AgentOutput:
-        payload = event.payload
-        intent = str(payload.get("intent") or event.intent_ref)
-        urgency = int(payload.get("urgency", 3))
-        impact = int(payload.get("impact", 3))
-        feasibility = int(payload.get("feasibility", 3))
-        priority = self._score_priority(urgency=urgency, impact=impact, feasibility=feasibility)
-        key = self._task_key(intent)
-
-        with self._lock:
-            status = self._latest_status_by_key().get(key)
-            if status in {"pending", "running", "retry"}:
-                return AgentOutput(agent=self.name, summary="duplicate skipped", next_event_type=EventType.AGENT_THINKING.value, details={"key": key})
-
-            queued = self.scheduler.enqueue(
-                QueueItem(
-                    key=key,
-                    priority=priority,
-                    event=AegisEvent(
-                        trace_id=event.trace_id,
-                        event_type=EventType.AGENT_EXECUTE,
-                        ts=now_utc(),
-                        agent=self.name,
-                        intent_ref=intent,
-                        cost=Cost(tokens=0, dollars=0.0),
-                        consequence_summary="loop scheduled task for forge",
-                        wealth_impact=WealthImpact(type="neutral", value=0.0),
-                        policy_state=PolicyState.APPROVED,
-                        payload={
-                            "task_type": "document",
-                            "spec": self._build_spec(intent),
-                            "output_path": str((Path("/tmp") / f"{key}.txt").resolve()),
-                            "task_key": key,
-                            "priority": float(priority),
-                        },
-                    ),
-                )
+        memory_context = ""
+        if self.memory:
+            recent = self.memory.search(event.intent_ref, k=3)
+            if recent:
+                joined = "\n".join(str(r.get("content", "")) for r in recent)
+                memory_context = "\n\nRelevant memories:\n" + joined
+        prompt = event.intent_ref + memory_context
+        try:
+            response = self._chat(
+                self.SYSTEM_PROMPT,
+                prompt,
+                model="anthropic/claude-opus-4-5",
+                max_tokens=1024,
             )
-            if not queued:
-                return AgentOutput(agent=self.name, summary="duplicate skipped", next_event_type=EventType.AGENT_THINKING.value, details={"key": key})
+            parsed = json.loads(response)
+            return AgentOutput(
+                summary=parsed.get("approach", "plan generated"),
+                details=parsed,
+            )
+        except Exception:
+            return AgentOutput(
+                summary="linear plan",
+                details={
+                    "plan": [event.intent_ref],
+                    "estimated_steps": 1,
+                    "tools_needed": [],
+                },
+            )
 
-            self._append_backlog({"key": key, "intent": intent, "status": "pending", "retries": 0, "priority": float(priority), "trace_id": event.trace_id})
-
-        return AgentOutput(agent=self.name, summary="task queued", next_event_type=EventType.AGENT_THINKING.value, details={"key": key, "priority": float(priority)})
-
-    def _on_agent_thinking(self, event: AegisEvent) -> AgentOutput:
-        known_devices = sorted(set(str(v) for v in event.payload.get("device_ids", []) if v))
-        if known_devices:
-            drift = self.state_sync.drift_check(known_devices, str(event.payload.get("drift_key", "position")))
-            if not drift["in_sync"]:
-                self.bus.publish(
-                    AegisEvent(
-                        trace_id=event.trace_id,
-                        event_type=EventType.AGENT_THINKING,
-                        ts=now_utc(),
-                        agent=self.name,
-                        intent_ref=event.intent_ref,
-                        cost=Cost(tokens=0, dollars=0.0),
-                        consequence_summary="loop detected drift and rethinking",
-                        wealth_impact=WealthImpact(type="risk", value=0.0),
-                        policy_state=PolicyState.APPROVED,
-                        payload={"drift": drift},
-                    )
-                )
-        item = self.scheduler.wake_next()
-        if item is None:
-            return AgentOutput(agent=self.name, summary="no pending tasks", next_event_type=EventType.AGENT_THINKING.value, details={})
-
-        self._trace_to_key[item.event.trace_id] = item.key
-        self._key_to_event[item.key] = item.event
-        self._persist_trace_map(item.event.trace_id, item.key)
-        self._append_backlog({"key": item.key, "status": "running", "retries": item.retries, "priority": float(item.priority), "trace_id": item.event.trace_id})
-        self.bus.publish(item.event)
-        return AgentOutput(agent=self.name, summary="dispatched to forge", next_event_type=EventType.AGENT_EXECUTE.value, details={"key": item.key})
-
-    def _on_map_consequence(self, event: AegisEvent) -> AgentOutput:
-        device_id = str(event.payload.get("device_id") or "global")
-        self.state_sync.set(device_id, "last_consequence", event.consequence_summary, "loop")
-        key = self._trace_to_key.get(event.trace_id)
-        if key is None:
-            LOGGER.warning("loop_trace_not_pending", extra={"trace_id": event.trace_id})
-            return AgentOutput(agent=self.name, summary="trace not pending; ignored", next_event_type=EventType.AGENT_THINKING.value, details={})
-
-        self.scheduler.sleep(key, resume_point="done")
-        self._append_backlog({"key": key, "status": "done", "trace_id": event.trace_id})
-        remember_event = AegisEvent(
-            trace_id=event.trace_id,
-            event_type=EventType.REMEMBER_CANDIDATE,
-            ts=now_utc(),
-            agent=self.name,
-            intent_ref=event.intent_ref,
-            cost=Cost(tokens=0, dollars=0.0),
-            consequence_summary="loop recorded completed task",
-            wealth_impact=WealthImpact(type="neutral", value=0.0),
-            policy_state=PolicyState.APPROVED,
-            payload={"task_key": key, "summary": event.consequence_summary, "output": event.payload.get("stdout") or event.payload.get("final_text") or ""},
-        )
-        self.bus.publish(remember_event)
-        return AgentOutput(agent=self.name, summary="task marked done", next_event_type=EventType.REMEMBER_CANDIDATE.value, details={"key": key})
-
-    def _on_policy_decision(self, event: AegisEvent) -> AgentOutput:
-        if event.policy_state != PolicyState.REJECTED:
-            return AgentOutput(agent=self.name, summary="policy decision ignored", next_event_type=EventType.AGENT_THINKING.value, details={})
-        key = self._trace_to_key.get(event.trace_id)
-        if not key:
-            key = str(event.payload.get("task_key") or "")
-        if not key:
-            return AgentOutput(agent=self.name, summary="rejected without key", next_event_type=EventType.AGENT_THINKING.value, details={})
-
-        retries = self.mark_retry(key)
-        if retries >= 4:
-            self.scheduler.sleep(key, resume_point="failed")
-            self._append_backlog({"key": key, "status": "failed", "retries": retries, "trace_id": event.trace_id})
-            return AgentOutput(agent=self.name, summary="task failed after retries", next_event_type=EventType.AGENT_THINKING.value, details={"key": key, "retries": retries})
-
-        self.scheduler.sleep(key, resume_point="retry")
-        original_event = self._key_to_event.get(key)
-        if original_event is not None:
-            self.scheduler.enqueue(QueueItem(key=key, priority=float(original_event.payload.get("priority", 1.0)), event=original_event, retries=retries))
-        self._append_backlog({"key": key, "status": "pending", "retries": retries, "trace_id": event.trace_id})
-        return AgentOutput(agent=self.name, summary="task re-queued after policy rejection", next_event_type=EventType.AGENT_THINKING.value, details={"key": key, "retries": retries})
-
-    def _on_skill_promoted(self, event: AegisEvent) -> AgentOutput:
-        row = {
-            "topic": event.payload.get("topic") or event.intent_ref,
-            "trace_id": event.trace_id,
-            "agent": event.agent,
-            "ts": datetime.now(timezone.utc).isoformat(),
-        }
-        with self.promoted_skills_path.open("a", encoding="utf-8") as handle:
-            handle.write(json.dumps(row, ensure_ascii=False) + "\n")
-        return AgentOutput(agent=self.name, summary="skill promotion recorded", next_event_type=EventType.SKILL_PROMOTED.value, details=row)
-
-    def mark_retry(self, key: str) -> int:
-        with self._lock:
-            retry_count = self._latest_retry_for_key(key) + 1
-            self._append_backlog({"key": key, "status": "retry", "retries": retry_count})
-            return retry_count
-
-    def _append_backlog(self, entry: Dict[str, Any]) -> None:
-        with self.backlog_path.open("a", encoding="utf-8") as handle:
-            handle.write(json.dumps(entry, ensure_ascii=False) + "\n")
-            handle.flush()
-
-    def _latest_status_by_key(self) -> Dict[str, str]:
-        status_map: Dict[str, str] = {}
-        if not self.backlog_path.exists():
-            return status_map
-        for raw_line in self.backlog_path.read_text(encoding="utf-8").splitlines():
-            if not raw_line.strip():
-                continue
-            try:
-                row = json.loads(raw_line)
-            except json.JSONDecodeError:
-                continue
-            key = str(row.get("key", ""))
-            if key:
-                status_map[key] = str(row.get("status", ""))
-        return status_map
-
-    def _latest_retry_for_key(self, key: str) -> int:
-        retries = 0
-        if not self.backlog_path.exists():
-            return retries
-        for raw_line in self.backlog_path.read_text(encoding="utf-8").splitlines():
-            try:
-                row = json.loads(raw_line)
-            except json.JSONDecodeError:
-                continue
-            if row.get("key") == key:
-                retries = int(row.get("retries", retries))
-        return retries
-
-    def _persist_trace_map(self, trace_id: str, key: str) -> None:
-        with self.trace_map_path.open("a", encoding="utf-8") as handle:
-            handle.write(json.dumps({"trace_id": trace_id, "key": key}, ensure_ascii=False) + "\n")
-
-    def _load_trace_map(self) -> Dict[str, str]:
-        mapping: Dict[str, str] = {}
-        if not self.trace_map_path.exists():
-            return mapping
-        for line in self.trace_map_path.read_text(encoding="utf-8").splitlines():
-            try:
-                row = json.loads(line)
-            except json.JSONDecodeError:
-                continue
-            trace_id = str(row.get("trace_id") or "")
-            key = str(row.get("key") or "")
-            if trace_id and key:
-                mapping[trace_id] = key
-        return mapping
-
-    def _build_spec(self, intent: str) -> str:
-        if not self.memory:
-            return intent
-        prior = self.memory.search(intent, k=3)
-        if not prior:
-            return intent
-        lines = ["PRIOR CONTEXT:"]
-        for row in prior:
-            content = row.get("content", {})
-            summary = content.get("summary") if isinstance(content, dict) else str(content)
-            lines.append(f"- [{row.get('topic')}] {summary}")
-        lines.append("")
-        lines.append("CURRENT TASK:")
-        lines.append(intent)
-        return "\n".join(lines)
-
-    @staticmethod
-    def _task_key(intent: str) -> str:
-        digest = hashlib.sha256(intent.strip().lower().encode("utf-8")).hexdigest()
-        return f"task_{digest[:16]}"
-
-    @staticmethod
-    def _score_priority(urgency: int, impact: int, feasibility: int) -> float:
-        value = (urgency * 2 + impact * 2 + feasibility) / 5
-        return float(f"{value:.6f}")
+    def on_event(self, event: AegisEvent) -> None:
+        _ = self.on_wake(event)

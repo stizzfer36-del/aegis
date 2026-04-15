@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Literal, Optional, Protocol
+from typing import Any, Literal, Protocol
 
 
 class ProviderError(RuntimeError):
@@ -16,23 +16,23 @@ class ProviderUnavailable(ProviderError):
 class Message:
     role: Literal["system", "user", "assistant", "tool"]
     content: str
-    tool_calls: List["ToolCall"] = field(default_factory=list)
-    tool_call_id: Optional[str] = None
-    name: Optional[str] = None
+    tool_calls: list[ToolCall] = field(default_factory=list)
+    tool_call_id: str | None = None
+    name: str | None = None
 
 
 @dataclass
 class ToolSpec:
     name: str
     description: str
-    input_schema: Dict[str, Any]
+    input_schema: dict[str, Any]
 
 
 @dataclass
 class ToolCall:
     id: str
     name: str
-    arguments: Dict[str, Any]
+    arguments: dict[str, Any]
 
 
 @dataclass
@@ -46,7 +46,7 @@ class ToolResult:
 @dataclass
 class Completion:
     text: str
-    tool_calls: List[ToolCall] = field(default_factory=list)
+    tool_calls: list[ToolCall] = field(default_factory=list)
     stop_reason: str = "end_turn"
     input_tokens: int = 0
     output_tokens: int = 0
@@ -65,10 +65,10 @@ class Provider(Protocol):
 
     def complete(
         self,
-        messages: List[Message],
-        tools: Optional[List[ToolSpec]] = None,
+        messages: list[Message],
+        tools: list[ToolSpec] | None = None,
         max_tokens: int = 1024,
         temperature: float = 0.2,
-        system: Optional[str] = None,
+        system: str | None = None,
     ) -> Completion:
         ...

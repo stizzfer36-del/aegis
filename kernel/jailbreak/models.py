@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import List
 
 
 @dataclass
@@ -19,4 +18,4 @@ class JailbreakStep:
 @dataclass
 class JailbreakPlan:
     device_type: str
-    steps: List[JailbreakStep]
+    steps: list[JailbreakStep]

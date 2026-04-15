@@ -1,80 +1,50 @@
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Optional
 
-from kernel.events import AegisEvent, EventType
-
-TRUST_CRITICAL_TYPES = {
-    EventType.AGENT_EXECUTE,
-    EventType.WEALTH_GENERATED,
-}
+from kernel.core.events import AegisEvent, EventType
 
 
-@dataclass(frozen=True)
-class PolicyRule:
-    name: str
-    predicate: callable
-    reason: str
-    decision: str
-    approval_required: bool = False
-    rollback_expected: bool = False
-
-
-@dataclass(frozen=True)
+@dataclass
 class PolicyDecision:
     decision: str
     reason: str
     matched_rule: str
-    approval_required: bool
-    rollback_expected: bool
 
 
 class PolicyGate:
-    """Triple gate: structure, trust-critical action, and budget discipline."""
-
-    def __init__(self, max_auto_spend_usd: float = 50.0) -> None:
+    def __init__(self, max_auto_spend_usd: float = 5.0):
         self.max_auto_spend_usd = max_auto_spend_usd
+        self.rules: list[dict] = []
+        self._load_default_rules()
+
+    def _load_default_rules(self) -> None:
+        self.add_rule(
+            "max_auto_spend",
+            lambda event: event.cost.dollars > self.max_auto_spend_usd,
+            "needs_approval",
+            "cost exceeds automatic spending threshold",
+        )
+        self.add_rule(
+            "system_recover",
+            lambda event: event.event_type == EventType.SYSTEM_RECOVER,
+            "approved",
+            "system recovery actions are always approved",
+        )
+        self.add_rule(
+            "delete_guard",
+            lambda event: "delete" in event.consequence_summary.lower() and event.cost.dollars > 0.10,
+            "needs_approval",
+            "destructive actions with non-trivial spend require approval",
+        )
+        self.add_rule("default_allow", lambda _event: True, "approved", "default allow")
 
     def evaluate(self, event: AegisEvent) -> PolicyDecision:
-        rules = [
-            self._rule_block_unmapped_execute,
-            self._rule_require_approval_for_high_spend,
-            self._rule_default_allow,
-        ]
-        for rule in rules:
-            hit = rule(event)
-            if hit:
-                return hit
-        return PolicyDecision("rejected", "No rule matched", "no_match", True, True)
+        for rule in self.rules:
+            if rule["predicate"](event):
+                return PolicyDecision(decision=rule["decision"], reason=rule["reason"], matched_rule=rule["name"])
+        return PolicyDecision(decision="approved", reason="default allow", matched_rule="default")
 
-    def _rule_block_unmapped_execute(self, event: AegisEvent) -> Optional[PolicyDecision]:
-        if event.event_type in TRUST_CRITICAL_TYPES and not event.consequence_summary.strip():
-            return PolicyDecision(
-                decision="rejected",
-                reason="Trust-critical action requires mapped consequence summary",
-                matched_rule="block_unmapped_execute",
-                approval_required=True,
-                rollback_expected=True,
-            )
-        return None
-
-    def _rule_require_approval_for_high_spend(self, event: AegisEvent) -> Optional[PolicyDecision]:
-        if event.cost.dollars > self.max_auto_spend_usd:
-            return PolicyDecision(
-                decision="needs_approval",
-                reason=f"Spend exceeds auto threshold ${self.max_auto_spend_usd:.2f}",
-                matched_rule="require_approval_for_high_spend",
-                approval_required=True,
-                rollback_expected=False,
-            )
-        return None
-
-    def _rule_default_allow(self, event: AegisEvent) -> Optional[PolicyDecision]:
-        return PolicyDecision(
-            decision="approved",
-            reason="Passed structural, trust, and budget gates",
-            matched_rule="default_allow",
-            approval_required=False,
-            rollback_expected=False,
-        )
+    def add_rule(self, name: str, predicate: Callable[[AegisEvent], bool], decision: str, reason: str) -> None:
+        self.rules.append({"name": name, "predicate": predicate, "decision": decision, "reason": reason})

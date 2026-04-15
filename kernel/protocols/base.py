@@ -1,9 +1,10 @@
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
+from collections.abc import Callable
 from dataclasses import dataclass
 from time import sleep
-from typing import Any, Callable, Dict, List, Optional, Union
+from typing import Any, Union
 
 from kernel.memory import MemoryClient
 
@@ -28,15 +29,15 @@ class HandshakeResult:
 class BaseProtocol(ABC):
     name = "base"
 
-    def __init__(self, memory: Optional[MemoryClient] = None, trace_id: str = "hardware") -> None:
+    def __init__(self, memory: MemoryClient | None = None, trace_id: str = "hardware") -> None:
         self.memory = memory or MemoryClient()
         self.trace_id = trace_id
         self.device_path = ""
-        self.fingerprint: Dict[str, Any] = {}
+        self.fingerprint: dict[str, Any] = {}
         self.connected = False
 
     @abstractmethod
-    def connect(self, device_path: str, fingerprint: Dict[str, Any]) -> bool:
+    def connect(self, device_path: str, fingerprint: dict[str, Any]) -> bool:
         raise NotImplementedError
 
     @abstractmethod
@@ -44,15 +45,15 @@ class BaseProtocol(ABC):
         raise NotImplementedError
 
     @abstractmethod
-    def send(self, command: Command, expect_response: bool) -> Optional[bytes]:
+    def send(self, command: Command, expect_response: bool) -> bytes | None:
         raise NotImplementedError
 
     @abstractmethod
-    def verify_handshake(self) -> Dict[str, str]:
+    def verify_handshake(self) -> dict[str, str]:
         raise NotImplementedError
 
     @abstractmethod
-    def list_capabilities(self) -> List[str]:
+    def list_capabilities(self) -> list[str]:
         raise NotImplementedError
 
     def retry(self, func: Callable[[], bool], attempts: int = 3) -> bool:
@@ -64,12 +65,12 @@ class BaseProtocol(ABC):
             delay *= 2
         return False
 
-    def validate_response(self, command: Command, response: Optional[bytes]) -> bytes:
+    def validate_response(self, command: Command, response: bytes | None) -> bytes:
         if response is None or response == b"":
             raise ProtocolError(self.name, command, b"", "empty response")
         return response
 
-    def record_outcome(self, action: str, ok: bool, detail: Dict[str, Any]) -> None:
+    def record_outcome(self, action: str, ok: bool, detail: dict[str, Any]) -> None:
         self.memory.write_candidate(
             trace_id=self.trace_id,
             topic="hardware.protocol.outcome",

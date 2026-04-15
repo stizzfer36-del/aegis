@@ -3,7 +3,6 @@ from __future__ import annotations
 import os
 import urllib.error
 import urllib.request
-from typing import List
 
 from .base import Provider, ProviderUnavailable
 from .echo import EchoProvider
@@ -80,7 +79,7 @@ def default_provider() -> Provider:
     return EchoProvider()
 
 
-def available_providers() -> List[str]:
+def available_providers() -> list[str]:
     out = ["echo"]
     if _ollama_available(os.getenv("OLLAMA_URL", "http://localhost:11434")):
         out.append("ollama")

@@ -1,12 +1,10 @@
 from __future__ import annotations
 
-from typing import List
-
 from kernel.hardware.chromebook.jailbreak_engine import build_plan
 from kernel.jailbreak.models import JailbreakStep
 
 
-def plan_for_board(board: str, wp_enabled: bool) -> List[JailbreakStep]:
+def plan_for_board(board: str, wp_enabled: bool) -> list[JailbreakStep]:
     raw = build_plan(board, wp_enabled)
     return [
         JailbreakStep(
