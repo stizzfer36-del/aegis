@@ -8,11 +8,13 @@ from urllib.parse import parse_qs
 from kernel.bus import EventBus
 from kernel.events import AegisEvent, Cost, EventType, PolicyState, WealthImpact, now_utc
 from kernel.memory import MemoryClient
+from kernel.setup import AdsbSetupService
 
 BUS = EventBus()
 MEMORY = MemoryClient()
 BACKLOG_PATH = Path(".aegis/backlog.jsonl")
 PROMOTED_PATH = Path(".aegis/promoted_skills.jsonl")
+SETUP = AdsbSetupService(memory=MEMORY)
 
 
 def _json_response(status: int, data: Any) -> Tuple[int, List[Tuple[bytes, bytes]], bytes]:
@@ -138,6 +140,12 @@ async def app(scope, receive, send):
         status, headers, out = _json_response(200, _read_backlog())
     elif path == "/api/promoted-skills":
         status, headers, out = _json_response(200, _read_promoted())
+    elif path == "/api/setup/bootstrap" and method == "POST":
+        payload = _parse_json(body)
+        confirm = str(payload.get("confirm") or "")
+        intent_key = str(payload.get("intent_key") or "default")
+        setup_result = SETUP.run(confirm=confirm, intent_key=intent_key)
+        status, headers, out = _json_response(200, setup_result.to_dict())
     else:
         status, headers, out = _json_response(404, {"error": "not found"})
 
