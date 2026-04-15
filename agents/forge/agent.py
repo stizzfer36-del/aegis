@@ -1,28 +1,31 @@
-"""Forge: the executor.
-
-Forge is where AEGIS actually does work. It drives an LLM tool-use loop, calls
-real tools through the policy-gated `ToolDispatcher`, and emits events for every
-action. If no provider or dispatcher is given, it falls back to producing an
-"artifact summary" so the legacy test contract still holds.
-"""
-
 from __future__ import annotations
 
-from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional
+import json
+import logging
+import shlex
+import shutil
+import subprocess
+import time
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Any, Dict, Optional
 
 from agents.common import AgentOutput, BaseAgent
-from kernel.events import AegisEvent, EventType
+from kernel.bus import EventBus
+from kernel.events import AegisEvent, Cost, EventType, PolicyState, WealthImpact, now_utc
+from kernel.policy import PolicyGate
+
+LOGGER = logging.getLogger(__name__)
 
 
 @dataclass
-class ExecutionTrace:
-    steps: List[Dict[str, Any]] = field(default_factory=list)
-    input_tokens: int = 0
-    output_tokens: int = 0
-    cost_usd: float = 0.0
-    final_text: str = ""
-    stop_reason: str = ""
+class ForgeResult:
+    exit_code: int
+    stdout: str
+    stderr: str
+    fallback_mode: bool
+    command: str
+    output_path: str
 
 
 class ForgeAgent(BaseAgent):
@@ -31,124 +34,138 @@ class ForgeAgent(BaseAgent):
 
     def __init__(
         self,
-        bus,
-        provider=None,
-        dispatcher=None,
-        max_steps: int = 8,
-        system_prompt: Optional[str] = None,
-        **kwargs,
+        bus: Optional[EventBus] = None,
+        provider: Optional[Any] = None,
+        policy: Optional[PolicyGate] = None,
+        log_path: str = ".aegis/forge_log.jsonl",
+        **kwargs: Any,
     ) -> None:
-        super().__init__(bus, provider=provider, **kwargs)
-        self.dispatcher = dispatcher
-        self.max_steps = max_steps
-        self.system_prompt = system_prompt or (
-            "You are Forge, the AEGIS executor. Use the provided tools to accomplish "
-            "the goal. Prefer the smallest concrete next action. When you are done, "
-            "respond with a short summary and no tool calls."
-        )
+        super().__init__(bus or EventBus(), provider=provider, **kwargs)
+        self.policy = policy or PolicyGate()
+        self.log_path = Path(log_path)
+        self.log_path.parent.mkdir(parents=True, exist_ok=True)
 
     def on_wake(self, event: AegisEvent) -> AgentOutput:
-        goal = event.payload.get("goal") or event.intent_ref
-        trace = self.execute(goal, trace_id=event.trace_id)
-        summary = (
-            f"artifact bundle + execution log produced ({len(trace.steps)} steps, "
-            f"cost=${trace.cost_usd:.4f})"
+        payload = event.payload
+        task_type = str(payload.get("task_type", "")).strip().lower()
+        spec = str(payload.get("spec", ""))
+        output_path = str(payload.get("output_path", "")).strip()
+
+        if task_type not in {"code", "shell", "document"}:
+            return self._result("invalid task_type", EventType.AGENT_MAP_CONSEQUENCE.value)
+        try:
+            safe_output = self._validate_output_path(output_path)
+        except ValueError as exc:
+            LOGGER.warning("forge_output_path_rejected", extra={"error": str(exc), "path": output_path})
+            return self._result(f"output path rejected: {exc}", EventType.POLICY_DECISION.value)
+
+        decision = self.policy.evaluate(event)
+        if decision.decision == "rejected":
+            policy_event = AegisEvent(
+                trace_id=event.trace_id,
+                event_type=EventType.POLICY_DECISION,
+                ts=now_utc(),
+                agent=self.name,
+                intent_ref=event.intent_ref,
+                cost=Cost(tokens=0, dollars=0.0),
+                consequence_summary=f"forge blocked: {decision.reason}",
+                wealth_impact=WealthImpact(type="risk", value=0.0),
+                policy_state=PolicyState.REJECTED,
+                payload={"task_type": task_type, "output_path": str(safe_output), "reason": decision.reason},
+            )
+            self.bus.publish(policy_event)
+            return self._result("policy rejected execution", EventType.POLICY_DECISION.value)
+
+        start = time.monotonic()
+        result = self._run_task(task_type=task_type, spec=spec, output_path=safe_output)
+        duration_ms = int((time.monotonic() - start) * 1000)
+
+        self._append_log(
+            {
+                "trace_id": event.trace_id,
+                "task_type": task_type,
+                "command": result.command,
+                "exit_code": result.exit_code,
+                "duration_ms": duration_ms,
+                "output_path": result.output_path,
+                "fallback_mode": result.fallback_mode,
+                "stdout": result.stdout,
+                "stderr": result.stderr,
+            }
         )
-        return AgentOutput(
+
+        consequence = AegisEvent(
+            trace_id=event.trace_id,
+            event_type=EventType.AGENT_MAP_CONSEQUENCE,
+            ts=now_utc(),
             agent=self.name,
-            summary=summary,
-            next_event_type=EventType.AGENT_MAP_CONSEQUENCE.value,
-            details={
-                "steps": trace.steps,
-                "final_text": trace.final_text,
-                "stop_reason": trace.stop_reason,
-                "cost_usd": trace.cost_usd,
-                "input_tokens": trace.input_tokens,
-                "output_tokens": trace.output_tokens,
+            intent_ref=event.intent_ref,
+            cost=Cost(tokens=0, dollars=0.0),
+            consequence_summary=f"forge completed {task_type} task",
+            wealth_impact=WealthImpact(type="neutral", value=0.0),
+            policy_state=PolicyState.APPROVED,
+            payload={
+                "artifact_path": result.output_path,
+                "command": result.command,
+                "exit_code": result.exit_code,
+                "fallback_mode": result.fallback_mode,
+                "policy_decision": decision.decision,
             },
         )
+        self.bus.publish(consequence)
+        return self._result(f"forge executed {task_type}", EventType.AGENT_MAP_CONSEQUENCE.value)
 
-    def execute(self, goal: str, trace_id: str = "tr_forge") -> ExecutionTrace:
-        result = ExecutionTrace()
-        if self.provider is None or self.dispatcher is None:
-            result.steps.append({"kind": "noop", "goal": goal})
-            result.final_text = f"artifact bundle for goal: {goal}"
-            result.stop_reason = "no_provider"
-            return result
+    def _run_task(self, task_type: str, spec: str, output_path: Path) -> ForgeResult:
+        if task_type == "document":
+            output_path.parent.mkdir(parents=True, exist_ok=True)
+            output_path.write_text(spec, encoding="utf-8")
+            return ForgeResult(0, spec, "", False, "write_document", str(output_path))
 
-        from kernel.providers import Message
-
-        tools = self.dispatcher.specs()
-        messages: List[Message] = [Message(role="user", content=f"Goal: {goal}")]
-
-        for _step in range(self.max_steps):
-            completion = self.provider.complete(
-                messages,
-                tools=tools,
-                system=self.system_prompt,
-                max_tokens=1024,
-                temperature=0.2,
+        if task_type == "shell":
+            proc = subprocess.run(
+                shlex.split(spec),
+                timeout=60,
+                capture_output=True,
+                text=True,
+                shell=False,
             )
-            result.input_tokens += completion.input_tokens
-            result.output_tokens += completion.output_tokens
-            result.cost_usd += completion.cost_usd
+            if proc.returncode == 0:
+                output_path.parent.mkdir(parents=True, exist_ok=True)
+                output_path.write_text(proc.stdout, encoding="utf-8")
+            return ForgeResult(proc.returncode, proc.stdout or "", proc.stderr or "", False, spec, str(output_path))
 
-            if not completion.tool_calls:
-                result.final_text = completion.text
-                result.stop_reason = completion.stop_reason or "end_turn"
-                result.steps.append({"kind": "text", "text": completion.text})
-                return result
+        aider_bin = shutil.which("aider")
+        if aider_bin is None:
+            output_path.parent.mkdir(parents=True, exist_ok=True)
+            output_path.write_text(spec, encoding="utf-8")
+            return ForgeResult(0, spec, "", True, "aider_missing_fallback", str(output_path))
 
-            messages.append(
-                Message(
-                    role="assistant",
-                    content=completion.text,
-                    tool_calls=list(completion.tool_calls),
-                )
-            )
+        cmd = [aider_bin, "--message", spec, "--yes", "--no-git", str(output_path)]
+        proc = subprocess.run(
+            cmd,
+            timeout=60,
+            capture_output=True,
+            text=True,
+            shell=False,
+        )
+        return ForgeResult(proc.returncode, proc.stdout or "", proc.stderr or "", False, " ".join(cmd), str(output_path))
 
-            for tc in completion.tool_calls:
-                try:
-                    tool_output = self.dispatcher.dispatch(
-                        tc.name,
-                        tc.arguments,
-                        trace_id=trace_id,
-                        agent=self.name,
-                    )
-                    ok = True
-                except Exception as exc:  # noqa: BLE001
-                    tool_output = {"error": str(exc)}
-                    ok = False
-                result.steps.append(
-                    {
-                        "kind": "tool",
-                        "name": tc.name,
-                        "arguments": tc.arguments,
-                        "ok": ok,
-                        "output": tool_output,
-                    }
-                )
-                messages.append(
-                    Message(
-                        role="tool",
-                        content=_trim_for_model(tool_output),
-                        tool_call_id=tc.id,
-                        name=tc.name,
-                    )
-                )
+    def _append_log(self, entry: Dict[str, Any]) -> None:
+        line = json.dumps(entry, ensure_ascii=False)
+        with self.log_path.open("a", encoding="utf-8") as handle:
+            handle.write(line)
+            handle.write("\n")
+            handle.flush()
 
-        result.stop_reason = "max_steps"
-        result.final_text = "execution halted: max_steps reached"
-        return result
+    def _validate_output_path(self, output_path: str) -> Path:
+        candidate = Path(output_path).resolve()
+        repo_root = Path.cwd().resolve()
+        tmp_root = Path("/tmp").resolve()
+        if candidate == repo_root or candidate == tmp_root:
+            return candidate
+        if repo_root in candidate.parents or tmp_root in candidate.parents:
+            return candidate
+        raise ValueError("path must be under repository root or /tmp")
 
-
-def _trim_for_model(data: Any, cap: int = 4000) -> str:
-    import json
-
-    try:
-        text = json.dumps(data, default=str)
-    except Exception:  # noqa: BLE001
-        text = str(data)
-    if len(text) > cap:
-        return text[:cap] + f"... [truncated {len(text) - cap} chars]"
-    return text
+    def _result(self, summary: str, next_event_type: str) -> AgentOutput:
+        return AgentOutput(agent=self.name, summary=summary, next_event_type=next_event_type, details={})

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import re
+import shlex
 import subprocess
 import time
 import urllib.error
@@ -53,7 +54,7 @@ def shell_exec(command: str, timeout: float = 20.0, cwd: Optional[str] = None, s
         raise ToolError(f"cwd not a directory: {workdir}")
     start = time.monotonic()
     try:
-        proc = subprocess.run(command, shell=True, cwd=str(workdir), capture_output=True, text=True, timeout=timeout, check=False)
+        proc = subprocess.run(shlex.split(command), shell=False, cwd=str(workdir), capture_output=True, text=True, timeout=timeout, check=False)
     except subprocess.TimeoutExpired as exc:
         raise ToolError(f"timeout after {timeout}s: {command[:120]}") from exc
     duration = int((time.monotonic() - start) * 1000)
