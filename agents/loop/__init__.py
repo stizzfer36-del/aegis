@@ -1,1 +1,1 @@
-from .agent import LoopAgent
+"""Loop — backlog scoring, sequencing, retry."""

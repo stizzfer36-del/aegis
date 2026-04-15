@@ -1,1 +1,1 @@
-from .agent import ScribeAgent
+"""Scribe — memory write, compression, skill promotion."""

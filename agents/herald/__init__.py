@@ -1,1 +1,1 @@
-from .agent import HeraldAgent
+"""Herald — terminal + Telegram delivery channel."""

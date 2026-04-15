@@ -1,1 +1,1 @@
-from .agent import ForgeAgent
+"""Forge — code generation, doc writing, shell execution."""
