@@ -17,6 +17,15 @@ from kernel.providers import Provider, default_provider
 from kernel.router import ModelRouter
 from kernel.tools import Sandbox, ToolDispatcher
 
+COST_PER_TOKEN_USD = 0.000002
+
+
+def estimate_tokens(text: str) -> int:
+    cleaned = (text or "").strip()
+    if not cleaned:
+        return 0
+    return max(1, len(cleaned) // 4)
+
 
 @dataclass
 class TraceResult:

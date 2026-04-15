@@ -87,7 +87,7 @@ class MemoryClient:
 
     def all(self, limit: int = 500) -> List[Dict[str, Any]]:
         with self._lock:
-            rows = self._conn.execute("SELECT id, trace_id, topic, preference, content, provenance FROM memory ORDER BY id DESC LIMIT ?", (limit,)).fetchall()
+            rows = self._conn.execute("SELECT id, trace_id, topic, preference, content, provenance, created_at FROM memory ORDER BY id DESC LIMIT ?", (limit,)).fetchall()
         return [self._row_to_dict(r) for r in rows]
 
     def search(self, query: str, k: int = 5) -> List[Dict[str, Any]]:
@@ -95,24 +95,45 @@ class MemoryClient:
         if not cleaned_query:
             return []
         try:
-            needle = f"%{cleaned_query.lower()}%"
+            tokens = _tokenize(cleaned_query)
             with self._lock:
-                rows = self._conn.execute(
-                    """
-                    SELECT id, trace_id, topic, preference, content, provenance
-                    FROM memory
-                    WHERE lower(topic) LIKE ?
-                       OR lower(preference) LIKE ?
-                       OR lower(content) LIKE ?
-                    ORDER BY created_at DESC
-                    LIMIT ?
-                    """,
-                    (needle, needle, needle, k),
-                ).fetchall()
+                rows: List[Tuple[Any, ...]] = []
+                if tokens:
+                    placeholders = ",".join(["?"] * len(tokens))
+                    rows = self._conn.execute(
+                        f"""
+                        SELECT DISTINCT m.id, m.trace_id, m.topic, m.preference, m.content, m.provenance, m.created_at
+                        FROM memory m
+                        JOIN memory_tokens t ON m.id = t.memory_id
+                        WHERE t.token IN ({placeholders})
+                        ORDER BY m.created_at DESC
+                        LIMIT ?
+                        """,
+                        tuple(tokens + [k]),
+                    ).fetchall()
+                if not rows:
+                    needle = f"%{cleaned_query.lower()}%"
+                    rows = self._conn.execute(
+                        """
+                        SELECT id, trace_id, topic, preference, content, provenance, created_at
+                        FROM memory
+                        WHERE lower(topic) LIKE ?
+                           OR lower(preference) LIKE ?
+                           OR lower(content) LIKE ?
+                        ORDER BY created_at DESC
+                        LIMIT ?
+                        """,
+                        (needle, needle, needle, k),
+                    ).fetchall()
             return [self._row_to_dict(r) for r in rows]
         except sqlite3.Error as exc:
             LOGGER.exception("memory_search_failed", extra={"error": str(exc)})
             return []
+
+    def count_by_topic(self, topic: str) -> int:
+        with self._lock:
+            row = self._conn.execute("SELECT COUNT(*) FROM memory WHERE topic = ?", (topic,)).fetchone()
+        return int(row[0] if row else 0)
 
     def summarize(self, trace_id: str) -> Dict[str, Any]:
         rows = self.query(trace_id=trace_id)
@@ -121,7 +142,12 @@ class MemoryClient:
 
     @staticmethod
     def _row_to_dict(r: Iterable[Any]) -> Dict[str, Any]:
-        rid, trace_id, topic, preference, content, provenance = r
+        row = tuple(r)
+        if len(row) == 7:
+            rid, trace_id, topic, preference, content, provenance, created_at = row
+        else:
+            rid, trace_id, topic, preference, content, provenance = row
+            created_at = None
         try:
             content_obj: Any = json.loads(content)
         except json.JSONDecodeError:
@@ -130,7 +156,15 @@ class MemoryClient:
             provenance_obj: Any = json.loads(provenance)
         except json.JSONDecodeError:
             provenance_obj = provenance
-        return {"id": rid, "trace_id": trace_id, "topic": topic, "preference": preference, "content": content_obj, "provenance": provenance_obj}
+        return {
+            "id": rid,
+            "trace_id": trace_id,
+            "topic": topic,
+            "preference": preference,
+            "content": content_obj,
+            "provenance": provenance_obj,
+            "created_at": created_at,
+        }
 
     def close(self) -> None:
         with self._lock:

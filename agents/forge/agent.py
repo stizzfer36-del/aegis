@@ -94,6 +94,29 @@ class ForgeAgent(BaseAgent):
             }
         )
 
+        if task_type == "shell" and result.exit_code != 0:
+            policy_event = AegisEvent(
+                trace_id=event.trace_id,
+                event_type=EventType.POLICY_DECISION,
+                ts=now_utc(),
+                agent=self.name,
+                intent_ref=event.intent_ref,
+                cost=Cost(tokens=0, dollars=0.0),
+                consequence_summary="forge shell execution failed",
+                wealth_impact=WealthImpact(type="risk", value=0.0),
+                policy_state=PolicyState.REJECTED,
+                payload={
+                    "task_type": task_type,
+                    "output_path": result.output_path,
+                    "reason": "shell_exit_nonzero",
+                    "exit_code": result.exit_code,
+                    "stderr": result.stderr,
+                    "task_key": payload.get("task_key"),
+                },
+            )
+            self.bus.publish(policy_event)
+            return self._result("shell task failed", EventType.POLICY_DECISION.value)
+
         consequence = AegisEvent(
             trace_id=event.trace_id,
             event_type=EventType.AGENT_MAP_CONSEQUENCE,
@@ -110,6 +133,9 @@ class ForgeAgent(BaseAgent):
                 "exit_code": result.exit_code,
                 "fallback_mode": result.fallback_mode,
                 "policy_decision": decision.decision,
+                "stdout": result.stdout,
+                "stderr": result.stderr,
+                "output": result.stdout,
             },
         )
         self.bus.publish(consequence)

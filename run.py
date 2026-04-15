@@ -1,10 +1,13 @@
 from __future__ import annotations
 
 import asyncio
+import importlib.util
 import logging
 import signal
-import sys
-from typing import List
+import threading
+import time
+from pathlib import Path
+from typing import List, Optional, Tuple
 
 from agents.forge.agent import ForgeAgent
 from agents.herald.agent import HeraldAgent
@@ -39,6 +42,39 @@ async def _agent_listener(agent) -> None:
         await asyncio.sleep(1.0)
 
 
+def _start_lens_server() -> Tuple[Optional[object], Optional[threading.Thread]]:
+    lens_path = Path("lens/server.py")
+    if not lens_path.exists():
+        return None, None
+
+    try:
+        import uvicorn
+    except Exception:
+        print("Lens unavailable — run: pip install uvicorn fastapi")
+        return None, None
+
+    spec = importlib.util.spec_from_file_location("aegis_lens_server", lens_path)
+    if spec is None or spec.loader is None:
+        return None, None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    app = getattr(module, "app", None)
+    if app is None:
+        return None, None
+
+    config = uvicorn.Config(app, host="127.0.0.1", port=7771, log_level="warning")
+    server = uvicorn.Server(config)
+
+    def _run() -> None:
+        server.run()
+
+    thread = threading.Thread(target=_run, name="aegis-lens", daemon=True)
+    thread.start()
+    time.sleep(0.15)
+    print("AEGIS Lens running → http://localhost:7771")
+    return server, thread
+
+
 async def _main() -> int:
     critical = _doctor_checks()
     if critical:
@@ -57,7 +93,7 @@ async def _main() -> int:
         lambda: ScribeAgent(bus, memory=memory),
         lambda: HeraldAgent(bus),
         lambda: ForgeAgent(bus),
-        lambda: LoopAgent(bus, scheduler=scheduler),
+        lambda: LoopAgent(bus, scheduler=scheduler, memory=memory),
     ):
         try:
             agents.append(factory())
@@ -67,6 +103,8 @@ async def _main() -> int:
     bus_mode = "fallback"
     memory_mode = "sqlite"
     print(f"AEGIS running — {len(agents)} agents active — bus: {bus_mode} — memory: {memory_mode}")
+
+    lens_server, lens_thread = _start_lens_server()
 
     tasks: List[asyncio.Task] = [asyncio.create_task(tick(scheduler, bus, interval_seconds=1.0), name="scheduler_tick")]
     for agent in agents:
@@ -87,8 +125,12 @@ async def _main() -> int:
         task.cancel()
     await asyncio.gather(*tasks, return_exceptions=True)
 
-    # flush bus
-    bus.replay()  # ensure log readable and buffered writes consumed
+    if lens_server is not None:
+        lens_server.should_exit = True
+        if lens_thread is not None:
+            lens_thread.join(timeout=2.0)
+
+    bus.replay()
     memory.close()
     print("AEGIS shutdown clean")
     return 0
