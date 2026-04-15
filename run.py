@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import importlib.util
 import logging
+import os
 import signal
 import threading
 import time
@@ -15,9 +16,15 @@ from agents.loop.agent import LoopAgent
 from agents.scribe.agent import ScribeAgent
 from agents.warden.agent import WardenAgent
 from kernel.bus import EventBus
+from kernel.checkpoint import CheckpointStore
 from kernel.memory import MemoryClient
+from kernel.outcome import OutcomeStore
+from kernel.provenance import ProvenanceStore
 from kernel.router import ModelRouter
 from kernel.scheduler import Scheduler, tick
+from kernel.state_sync import StateSyncStore
+from kernel.anomaly import AnomalyDetector
+from kernel.providers import default_provider
 
 logging.basicConfig(level=logging.INFO, format='{"level":"%(levelname)s","name":"%(name)s","message":"%(message)s"}')
 LOGGER = logging.getLogger("run")
@@ -86,14 +93,22 @@ async def _main() -> int:
     scheduler = Scheduler()
     memory = MemoryClient()
     _router = ModelRouter()
+    outcome = OutcomeStore()
+    checkpoint = CheckpointStore(outcome=outcome)
+    provenance = ProvenanceStore()
+    state_sync = StateSyncStore()
+    anomaly = AnomalyDetector(bus=bus)
+    provider = default_provider()
+    data_dir = Path(os.getenv("AEGIS_DATA_DIR", ".aegis")).resolve()
+    data_dir.mkdir(parents=True, exist_ok=True)
 
     agents = []
     for factory in (
-        lambda: WardenAgent(bus),
+        lambda: WardenAgent(bus, anomaly=anomaly),
         lambda: ScribeAgent(bus, memory=memory),
         lambda: HeraldAgent(bus),
-        lambda: ForgeAgent(bus),
-        lambda: LoopAgent(bus, scheduler=scheduler, memory=memory),
+        lambda: ForgeAgent(bus, outcome=outcome, checkpoint=checkpoint, provenance=provenance),
+        lambda: LoopAgent(bus, scheduler=scheduler, memory=memory, outcome=outcome, state_sync=state_sync),
     ):
         try:
             agents.append(factory())
@@ -102,7 +117,15 @@ async def _main() -> int:
 
     bus_mode = "fallback"
     memory_mode = "sqlite"
-    print(f"AEGIS running — {len(agents)} agents active — bus: {bus_mode} — memory: {memory_mode}")
+    print(
+        f"AEGIS running — {len(agents)} agents active — bus: {bus_mode} — memory: {memory_mode} "
+        f"— outcome:{outcome.db_path} — anomaly:active — data:{data_dir}"
+    )
+    provider_name = provider.__class__.__name__.replace("Provider", "").lower() or "unknown"
+    if provider_name == "echo":
+        print("Provider fallback active: echo (set OLLAMA_URL or OPENAI_API_KEY/ANTHROPIC_API_KEY for real LLM responses)")
+    else:
+        print(f"Provider active: {provider_name}")
 
     lens_server, lens_thread = _start_lens_server()
 

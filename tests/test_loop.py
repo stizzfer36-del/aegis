@@ -54,3 +54,12 @@ def test_task_retries_marked_failed(tmp_path, monkeypatch) -> None:
     agent._append_backlog({"key": key, "status": "failed", "retries": 3})
     rows = [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines()]
     assert rows[-1]["status"] == "failed"
+
+
+def test_loop_default_paths_use_aegis_data_dir(tmp_path, monkeypatch) -> None:
+    monkeypatch.chdir(tmp_path)
+    data_dir = tmp_path / "agent_data"
+    monkeypatch.setenv("AEGIS_DATA_DIR", str(data_dir))
+    agent = LoopAgent()
+    agent.on_wake(make_event("env path intent"))
+    assert (data_dir / "backlog.jsonl").exists()

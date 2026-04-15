@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import os
 import threading
 from datetime import datetime, timezone
 from pathlib import Path
@@ -12,7 +13,9 @@ from agents.common import AgentOutput, BaseAgent
 from kernel.bus import EventBus
 from kernel.events import AegisEvent, Cost, EventType, PolicyState, WealthImpact, now_utc
 from kernel.memory import MemoryClient
+from kernel.outcome import OutcomeStore
 from kernel.scheduler import QueueItem, Scheduler
+from kernel.state_sync import StateSyncStore
 
 LOGGER = logging.getLogger(__name__)
 
@@ -32,18 +35,23 @@ class LoopAgent(BaseAgent):
         bus: Optional[EventBus] = None,
         provider: Optional[Any] = None,
         scheduler: Optional[Scheduler] = None,
-        backlog_path: str = ".aegis/backlog.jsonl",
-        trace_map_path: str = ".aegis/trace_map.jsonl",
-        promoted_skills_path: str = ".aegis/promoted_skills.jsonl",
+        backlog_path: Optional[str] = None,
+        trace_map_path: Optional[str] = None,
+        promoted_skills_path: Optional[str] = None,
         memory: Optional[MemoryClient] = None,
+        outcome: Optional[OutcomeStore] = None,
+        state_sync: Optional[StateSyncStore] = None,
         **kwargs: Any,
     ) -> None:
         super().__init__(bus or EventBus(), provider=provider, **kwargs)
         self.scheduler = scheduler or Scheduler()
         self.memory = memory
-        self.backlog_path = Path(backlog_path)
-        self.trace_map_path = Path(trace_map_path)
-        self.promoted_skills_path = Path(promoted_skills_path)
+        self.outcome = outcome or OutcomeStore()
+        self.state_sync = state_sync or StateSyncStore()
+        data_dir = Path(os.getenv("AEGIS_DATA_DIR", ".aegis"))
+        self.backlog_path = Path(backlog_path) if backlog_path else data_dir / "backlog.jsonl"
+        self.trace_map_path = Path(trace_map_path) if trace_map_path else data_dir / "trace_map.jsonl"
+        self.promoted_skills_path = Path(promoted_skills_path) if promoted_skills_path else data_dir / "promoted_skills.jsonl"
         self.backlog_path.parent.mkdir(parents=True, exist_ok=True)
         self.trace_map_path.parent.mkdir(parents=True, exist_ok=True)
         self.promoted_skills_path.parent.mkdir(parents=True, exist_ok=True)
@@ -110,6 +118,24 @@ class LoopAgent(BaseAgent):
         return AgentOutput(agent=self.name, summary="task queued", next_event_type=EventType.AGENT_THINKING.value, details={"key": key, "priority": float(priority)})
 
     def _on_agent_thinking(self, event: AegisEvent) -> AgentOutput:
+        known_devices = sorted(set(str(v) for v in event.payload.get("device_ids", []) if v))
+        if known_devices:
+            drift = self.state_sync.drift_check(known_devices, str(event.payload.get("drift_key", "position")))
+            if not drift["in_sync"]:
+                self.bus.publish(
+                    AegisEvent(
+                        trace_id=event.trace_id,
+                        event_type=EventType.AGENT_THINKING,
+                        ts=now_utc(),
+                        agent=self.name,
+                        intent_ref=event.intent_ref,
+                        cost=Cost(tokens=0, dollars=0.0),
+                        consequence_summary="loop detected drift and rethinking",
+                        wealth_impact=WealthImpact(type="risk", value=0.0),
+                        policy_state=PolicyState.APPROVED,
+                        payload={"drift": drift},
+                    )
+                )
         item = self.scheduler.wake_next()
         if item is None:
             return AgentOutput(agent=self.name, summary="no pending tasks", next_event_type=EventType.AGENT_THINKING.value, details={})
@@ -122,6 +148,8 @@ class LoopAgent(BaseAgent):
         return AgentOutput(agent=self.name, summary="dispatched to forge", next_event_type=EventType.AGENT_EXECUTE.value, details={"key": item.key})
 
     def _on_map_consequence(self, event: AegisEvent) -> AgentOutput:
+        device_id = str(event.payload.get("device_id") or "global")
+        self.state_sync.set(device_id, "last_consequence", event.consequence_summary, "loop")
         key = self._trace_to_key.get(event.trace_id)
         if key is None:
             LOGGER.warning("loop_trace_not_pending", extra={"trace_id": event.trace_id})

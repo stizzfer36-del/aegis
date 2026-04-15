@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import shlex
 import shutil
 import subprocess
@@ -12,8 +13,11 @@ from typing import Any, Dict, Optional
 
 from agents.common import AgentOutput, BaseAgent
 from kernel.bus import EventBus
+from kernel.checkpoint import CheckpointStore
 from kernel.events import AegisEvent, Cost, EventType, PolicyState, WealthImpact, now_utc
+from kernel.outcome import OutcomeStore
 from kernel.policy import PolicyGate
+from kernel.provenance import ProvenanceStore
 
 LOGGER = logging.getLogger(__name__)
 
@@ -37,13 +41,20 @@ class ForgeAgent(BaseAgent):
         bus: Optional[EventBus] = None,
         provider: Optional[Any] = None,
         policy: Optional[PolicyGate] = None,
-        log_path: str = ".aegis/forge_log.jsonl",
+        log_path: Optional[str] = None,
+        outcome: Optional[OutcomeStore] = None,
+        checkpoint: Optional[CheckpointStore] = None,
+        provenance: Optional[ProvenanceStore] = None,
         **kwargs: Any,
     ) -> None:
         super().__init__(bus or EventBus(), provider=provider, **kwargs)
         self.policy = policy or PolicyGate()
-        self.log_path = Path(log_path)
+        data_dir = Path(os.getenv("AEGIS_DATA_DIR", ".aegis"))
+        self.log_path = Path(log_path) if log_path else data_dir / "forge_log.jsonl"
         self.log_path.parent.mkdir(parents=True, exist_ok=True)
+        self.outcome = outcome or OutcomeStore()
+        self.checkpoint = checkpoint or CheckpointStore(outcome=self.outcome)
+        self.provenance = provenance or ProvenanceStore()
 
     def on_wake(self, event: AegisEvent) -> AgentOutput:
         payload = event.payload
@@ -76,6 +87,22 @@ class ForgeAgent(BaseAgent):
             self.bus.publish(policy_event)
             return self._result("policy rejected execution", EventType.POLICY_DECISION.value)
 
+        if task_type in {"shell", "code"}:
+            self.outcome.record_intent(
+                event.trace_id,
+                self.name,
+                "firmware" if task_type == "shell" else "design",
+                intent={"task_type": task_type, "spec": spec, "output_path": str(safe_output)},
+                expected={"exit_code": 0},
+            )
+
+        checkpoint_path = None
+        if task_type == "shell":
+            target_device = str(payload.get("target_device") or "unknown")
+            cp_sources = [str(safe_output)] if safe_output.exists() else []
+            if cp_sources:
+                checkpoint_path = self.checkpoint.create(event.trace_id, self.name, target_device, cp_sources)
+
         start = time.monotonic()
         result = self._run_task(task_type=task_type, spec=spec, output_path=safe_output)
         duration_ms = int((time.monotonic() - start) * 1000)
@@ -91,10 +118,40 @@ class ForgeAgent(BaseAgent):
                 "fallback_mode": result.fallback_mode,
                 "stdout": result.stdout,
                 "stderr": result.stderr,
+                "checkpoint_path": checkpoint_path,
             }
         )
+        if task_type in {"shell", "code"}:
+            self.provenance.record(
+                trace_id=event.trace_id,
+                agent=self.name,
+                command=result.command,
+                inputs=payload,
+                outputs={"stdout": result.stdout, "stderr": result.stderr, "exit_code": result.exit_code},
+                exit_code=result.exit_code,
+            )
 
         if task_type == "shell" and result.exit_code != 0:
+            rolled_back = False
+            try:
+                self.checkpoint.restore(event.trace_id)
+                rolled_back = True
+            except FileNotFoundError:
+                rolled_back = False
+            self.outcome.record_actual(event.trace_id, {"exit_code": result.exit_code, "rolled_back": rolled_back})
+            consequence = AegisEvent(
+                trace_id=event.trace_id,
+                event_type=EventType.AGENT_MAP_CONSEQUENCE,
+                ts=now_utc(),
+                agent=self.name,
+                intent_ref=event.intent_ref,
+                cost=Cost(tokens=0, dollars=0.0),
+                consequence_summary=f"firmware rollback: {event.trace_id}",
+                wealth_impact=WealthImpact(type="risk", value=0.0),
+                policy_state=PolicyState.REJECTED,
+                payload={"trace_id": event.trace_id, "checkpoint_path": checkpoint_path, "rolled_back": rolled_back},
+            )
+            self.bus.publish(consequence)
             policy_event = AegisEvent(
                 trace_id=event.trace_id,
                 event_type=EventType.POLICY_DECISION,
@@ -116,6 +173,9 @@ class ForgeAgent(BaseAgent):
             )
             self.bus.publish(policy_event)
             return self._result("shell task failed", EventType.POLICY_DECISION.value)
+
+        if task_type in {"shell", "code"}:
+            self.outcome.record_actual(event.trace_id, {"exit_code": result.exit_code, "file_written": Path(result.output_path).exists()})
 
         consequence = AegisEvent(
             trace_id=event.trace_id,

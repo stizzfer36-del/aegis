@@ -52,3 +52,13 @@ def test_forge_log_written(tmp_path, monkeypatch) -> None:
     assert row["trace_id"] == "tr_forge_test"
     assert row["task_type"] == "document"
     assert "duration_ms" in row
+
+
+def test_forge_default_log_uses_aegis_data_dir(tmp_path, monkeypatch) -> None:
+    monkeypatch.chdir(tmp_path)
+    data_dir = tmp_path / "custom_data"
+    monkeypatch.setenv("AEGIS_DATA_DIR", str(data_dir))
+    out = tmp_path / "doc.txt"
+    agent = ForgeAgent()
+    agent.on_wake(make_event(str(out), task_type="document"))
+    assert (data_dir / "forge_log.jsonl").exists()

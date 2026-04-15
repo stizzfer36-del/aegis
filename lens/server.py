@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 from typing import Any, Dict, List, Tuple
 from urllib.parse import parse_qs
@@ -12,8 +13,9 @@ from kernel.setup import AdsbSetupService
 
 BUS = EventBus()
 MEMORY = MemoryClient()
-BACKLOG_PATH = Path(".aegis/backlog.jsonl")
-PROMOTED_PATH = Path(".aegis/promoted_skills.jsonl")
+DATA_DIR = Path(os.getenv("AEGIS_DATA_DIR", ".aegis"))
+BACKLOG_PATH = DATA_DIR / "backlog.jsonl"
+PROMOTED_PATH = DATA_DIR / "promoted_skills.jsonl"
 SETUP = AdsbSetupService(memory=MEMORY)
 
 
@@ -75,7 +77,11 @@ body{margin:0;background:#0b0b0b;color:#e6e6e6;font-family:ui-monospace,SFMono-R
 .row{padding:8px;border-bottom:1px solid rgba(255,255,255,.05);cursor:pointer}.row.rejected{background:rgba(255,30,30,.08);border-left:2px solid #FF3333}.row.remember{background:rgba(255,255,255,.03)}
 pre{white-space:pre-wrap;font-size:12px}input{width:100%;padding:8px;background:#111;color:#fff;border:1px solid rgba(255,255,255,.2)}@media (max-width:900px){.grid{grid-template-columns:1fr}}
 </style></head><body><header><div>AEGIS</div><div id='live'>○ OFFLINE</div></header>
-<div class='grid'><div class='col'><section class='panel'><h3>INTAKE</h3><input id='intent' placeholder='Enter intent...'><button onclick='submitIntent()'>Dispatch</button><div id='intentResult'></div></section>
+<div class='grid'><div class='col'><section class='panel'><h3>INTAKE</h3><input id='intent' placeholder='Enter intent...'>
+<div style='display:grid;grid-template-columns:1fr auto;gap:6px;margin-top:8px;align-items:center'><label>urgency</label><input id='urgency' type='range' min='1' max='5' value='3'></div>
+<div style='display:grid;grid-template-columns:1fr auto;gap:6px;margin-top:6px;align-items:center'><label>impact</label><input id='impact' type='range' min='1' max='5' value='3'></div>
+<div style='display:grid;grid-template-columns:1fr auto;gap:6px;margin-top:6px;align-items:center'><label>feasibility</label><input id='feasibility' type='range' min='1' max='5' value='3'></div>
+<button onclick='submitIntent()'>Dispatch</button><div id='intentResult'></div></section>
 <section class='panel'><h3>TASK QUEUE</h3><div id='queue'></div></section><section class='panel'><h3>MEMORY SEARCH</h3><input id='search' placeholder='Search memory...'><div id='memory'></div><h3 style='margin-top:12px'>LEARNED SKILLS</h3><div id='skills'></div></section></div>
 <section class='panel'><h3>TRACE FEED</h3><div id='traces'></div></section></div>
 <script>
@@ -87,7 +93,7 @@ function statusColor(s){if(s==='running')return '#fff';if(s==='pending')return '
 async function renderQueue(){const r=await fetch('/api/queue');const rows=await r.json();const order={running:0,pending:1,retry:2,done:3,failed:4};rows.sort((a,b)=>(order[a.status]??9)-(order[b.status]??9));document.getElementById('queue').innerHTML=rows.map(x=>`<div class='row'>[${esc((x.key||'').slice(0,16))}] <span style='color:${statusColor(x.status)}'>${esc(x.status)}</span> [${x.retries||0}] [${x.priority||0}]</div>`).join('')}
 let t;async function renderMemory(){const q=document.getElementById('search').value;const r=await fetch('/api/memory/search?q='+encodeURIComponent(q));const rows=await r.json();const m=document.getElementById('memory');if(!rows.length){m.textContent='No memory matches. Memory compounds as AEGIS works.';return}m.innerHTML=rows.map(x=>`<div class='row'><div>${esc(x.topic)}</div><div>${esc(JSON.stringify(x.content).slice(0,200))}</div><div>${esc((x.provenance||{}).source||'')}</div><div>${esc(x.created_at||'')}</div></div>`).join('')}
 async function renderSkills(){const r=await fetch('/api/promoted-skills');const rows=await r.json();const el=document.getElementById('skills');if(!rows.length){el.textContent='No skills promoted yet.';return}el.innerHTML=rows.map(x=>`<div class='row'>${esc(x.topic)} — ${esc(x.ts||'')}</div>`).join('')}
-async function submitIntent(){const val=document.getElementById('intent').value;const r=await fetch('/api/intent',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({intent:val})});const j=await r.json();document.getElementById('intentResult').textContent='trace_id: '+j.trace_id}
+async function submitIntent(){const val=document.getElementById('intent').value;const urgency=Number(document.getElementById('urgency').value||3);const impact=Number(document.getElementById('impact').value||3);const feasibility=Number(document.getElementById('feasibility').value||3);const r=await fetch('/api/intent',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({intent:val,urgency,impact,feasibility})});const j=await r.json();document.getElementById('intentResult').textContent='trace_id: '+j.trace_id}
 document.getElementById('search').addEventListener('input',()=>{clearTimeout(t);t=setTimeout(renderMemory,300)});health();renderTraces();renderQueue();renderMemory();renderSkills();setInterval(health,3000);setInterval(renderTraces,1500);setInterval(renderQueue,3000);setInterval(renderSkills,3000)
 </script></body></html>"""
 

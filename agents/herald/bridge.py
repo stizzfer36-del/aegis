@@ -16,10 +16,11 @@ LOGGER = logging.getLogger(__name__)
 class HeraldBridge:
     """Bidirectional bridge contract for terminal + Telegram continuity."""
 
-    def __init__(self, trace_id: str, bus: Optional[EventBus] = None, sessions_path: str = ".aegis/herald_sessions.jsonl") -> None:
+    def __init__(self, trace_id: str, bus: Optional[EventBus] = None, sessions_path: Optional[str] = None) -> None:
         self.state = SessionState(trace_id=trace_id)
         self.bus = bus or EventBus()
-        self.sessions_path = Path(sessions_path)
+        default_path = Path(os.getenv("AEGIS_DATA_DIR", ".aegis")) / "herald_sessions.jsonl"
+        self.sessions_path = Path(sessions_path) if sessions_path else default_path
         self.sessions_path.parent.mkdir(parents=True, exist_ok=True)
         self._telegram_app: Any = None
 
