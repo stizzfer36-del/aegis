@@ -23,5 +23,5 @@ bb38e23 security: remove shell=True subprocess execution
 6. Loop inline python acceptance check — PASS
 7. cd lens && npm run build — PASS
 
-## FAILURES.md status
+## docs/FAILURES.md status
 No unresolved failures were recorded.

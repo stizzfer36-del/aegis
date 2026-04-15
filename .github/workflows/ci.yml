@@ -9,6 +9,7 @@ jobs:
         with:
           python-version: '3.11'
       - run: python -m pip install -e '.[dev]'
+      - run: ruff check kernel/core pyproject.toml
       - run: pytest -q
       - run: python - <<'PY'
 from kernel.events import AegisEvent

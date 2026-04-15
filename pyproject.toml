@@ -1,5 +1,5 @@
 [build-system]
-requires = ["setuptools", "wheel"]
+requires = ["setuptools>=69", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
@@ -10,16 +10,45 @@ requires-python = ">=3.10"
 dependencies = []
 
 [project.optional-dependencies]
-dev = ["pytest"]
+dev = ["pytest", "ruff", "mypy"]
 senses = ["psutil", "mss", "pytesseract", "RealtimeSTT", "faster-whisper"]
 radio = ["scapy", "bleak", "python-nmap"]
 browser = ["playwright"]
 usb = ["hidapi", "pyserial"]
 mcp = ["mcp"]
-all = ["psutil", "mss", "pytesseract", "RealtimeSTT", "faster-whisper", "scapy", "bleak", "python-nmap", "playwright", "hidapi", "pyserial", "mcp"]
+all = [
+  "psutil",
+  "mss",
+  "pytesseract",
+  "RealtimeSTT",
+  "faster-whisper",
+  "scapy",
+  "bleak",
+  "python-nmap",
+  "playwright",
+  "hidapi",
+  "pyserial",
+  "mcp",
+]
 
 [project.scripts]
 aegis = "kernel.introspect:main"
 
-[tool.setuptools]
-packages = ["kernel", "kernel.tools", "kernel.providers", "kernel.senses", "kernel.software", "agents", "agents.warden", "agents.scribe", "agents.herald", "agents.forge", "agents.loop"]
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["kernel*", "agents*"]
+
+[tool.ruff]
+line-length = 120
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B"]
+ignore = ["E501"]
+
+[tool.mypy]
+python_version = "3.10"
+warn_redundant_casts = true
+warn_unused_ignores = true
+disallow_untyped_defs = false
+ignore_missing_imports = true
