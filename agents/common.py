@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
-from typing import List
+from dataclasses import dataclass, field
+from typing import Any, Dict, List, Optional
 
 from kernel.bus import EventBus
 from kernel.events import AegisEvent
@@ -12,21 +12,26 @@ class AgentOutput:
     agent: str
     summary: str
     next_event_type: str
+    details: Dict[str, Any] = field(default_factory=dict)
 
 
 class BaseAgent:
     name = "base"
     subscriptions: List[str] = []
 
-    def __init__(self, bus: EventBus) -> None:
+    def __init__(self, bus: EventBus, provider: Optional[Any] = None, **kwargs: Any) -> None:
         self.bus = bus
+        self.provider = provider
 
     def bind(self) -> None:
         for sub in self.subscriptions:
-            self.bus.subscribe(sub, self.on_wake)
+            self.bus.subscribe(sub, self._make_handler())
+
+    def _make_handler(self):
+        def _handler(event: AegisEvent) -> None:
+            self.on_wake(event)
+
+        return _handler
 
     def on_wake(self, event: AegisEvent) -> AgentOutput:
         raise NotImplementedError
-
-    def on_sleep(self) -> None:
-        return None
