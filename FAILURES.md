@@ -11,3 +11,9 @@
   1. Install dependencies: `pip install uvicorn fastapi`
   2. Re-run `python run.py` and verify `AEGIS Lens running → http://localhost:7771`.
   3. Confirm `curl http://localhost:7771/api/health` returns HTTP 200.
+
+## Expansion gaps not fully completed in this pass
+
+- Lens dashboard complete rework to six routes and new SSE/API contracts was not fully implemented yet.
+- MCP host is currently scaffolded with discoverable placeholder tools; full runtime tool forwarding via mcp SDK is pending.
+- Real hardware-dependent acceptance tests (voice, WiFi, Bluetooth, USB, OCR) were not verifiable in this environment.

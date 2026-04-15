@@ -7,6 +7,13 @@ from typing import Any, Callable, Dict, List, Optional
 from kernel.events import AegisEvent, Cost, EventType, PolicyState, WealthImpact, now_utc
 from kernel.policy import PolicyGate
 from kernel.providers import ToolSpec
+from kernel.software.registry import get_available_tools
+from kernel.senses.radio import bettercap_command, bluetooth_scan, network_scan, wifi_scan
+from kernel.senses.screen import screen_capture, screen_read
+from kernel.senses.system import battery_status, network_interfaces, process_list, sys_info
+from kernel.tools.browser import browser_click, browser_navigate, browser_read, browser_screenshot, browser_search, browser_type
+from kernel.tools.mcp_host import MCPHost
+from kernel.tools.usb import hid_list, serial_list, serial_listen, serial_send
 
 from .active import ToolError, file_edit, file_read, file_write, http_get, list_dir, memory_query, shell_exec
 from .sandbox import Sandbox, SandboxViolation
@@ -17,6 +24,9 @@ class ToolBinding:
     spec: ToolSpec
     fn: Callable[..., Dict[str, Any]]
     trust_critical: bool = False
+    source: str = "native"
+    available: bool = True
+    path: Optional[str] = None
 
 
 def _spec(name: str, description: str, properties: Dict[str, Any], required: List[str]) -> ToolSpec:
@@ -25,7 +35,7 @@ def _spec(name: str, description: str, properties: Dict[str, Any], required: Lis
 
 def default_tools(sandbox: Optional[Sandbox] = None, memory=None) -> Dict[str, ToolBinding]:
     sb = sandbox or Sandbox.default()
-    return {
+    tools: Dict[str, ToolBinding] = {
         "shell_exec": ToolBinding(spec=_spec("shell_exec", "Run a shell command inside the AEGIS workspace. Returns stdout, stderr, returncode.", {"command": {"type": "string", "description": "shell command to run"}, "timeout": {"type": "number", "description": "seconds, default 20"}, "cwd": {"type": "string", "description": "working directory within workspace"}}, ["command"]), fn=lambda **kw: shell_exec(sandbox=sb, **kw), trust_critical=True),
         "file_read": ToolBinding(spec=_spec("file_read", "Read a text file from the workspace.", {"path": {"type": "string"}, "max_bytes": {"type": "integer", "description": "default 65536"}}, ["path"]), fn=lambda **kw: file_read(sandbox=sb, **kw)),
         "file_write": ToolBinding(spec=_spec("file_write", "Write a text file in the workspace. Creates parent dirs.", {"path": {"type": "string"}, "content": {"type": "string"}, "append": {"type": "boolean", "description": "default false"}}, ["path", "content"]), fn=lambda **kw: file_write(sandbox=sb, **kw), trust_critical=True),
@@ -34,6 +44,51 @@ def default_tools(sandbox: Optional[Sandbox] = None, memory=None) -> Dict[str, T
         "http_get": ToolBinding(spec=_spec("http_get", "HTTP GET. Respects AEGIS_HTTP_ALLOW allowlist if set.", {"url": {"type": "string"}, "timeout": {"type": "number", "description": "default 10"}, "max_bytes": {"type": "integer", "description": "default 65536"}}, ["url"]), fn=lambda **kw: http_get(**kw), trust_critical=True),
         "memory_query": ToolBinding(spec=_spec("memory_query", "Search compounding memory for relevant past knowledge.", {"query": {"type": "string"}, "k": {"type": "integer", "description": "top-k results, default 5"}}, ["query"]), fn=lambda **kw: memory_query(memory=memory, **kw)),
     }
+
+    native = {
+        "sys_info": (sys_info, "System CPU/RAM/disk and uptime snapshot", {}),
+        "process_list": (process_list, "Top processes by CPU", {}),
+        "network_interfaces": (network_interfaces, "Network interfaces and throughput", {}),
+        "battery_status": (battery_status, "Battery status", {}),
+        "screen_capture": (screen_capture, "Capture screenshot to .aegis/screenshots", {"monitor": {"type": "integer"}}),
+        "screen_read": (screen_read, "Read OCR text from screen capture", {"monitor": {"type": "integer"}}),
+        "wifi_scan": (wifi_scan, "Scan nearby WiFi networks", {}),
+        "bluetooth_scan": (bluetooth_scan, "Scan nearby Bluetooth devices", {"timeout": {"type": "number"}}),
+        "bettercap_command": (bettercap_command, "Run Bettercap API command", {"cmd": {"type": "string"}}),
+        "network_scan": (network_scan, "Scan network hosts and open ports", {"target": {"type": "string"}}),
+        "hid_list": (hid_list, "List USB HID devices", {}),
+        "serial_list": (serial_list, "List serial ports", {}),
+        "serial_send": (serial_send, "Send message to serial port", {"port": {"type": "string"}, "baud": {"type": "integer"}, "message": {"type": "string"}, "timeout": {"type": "number"}}),
+        "serial_listen": (serial_listen, "Listen on serial port", {"port": {"type": "string"}, "baud": {"type": "integer"}, "duration": {"type": "number"}}),
+        "browser_navigate": (browser_navigate, "Navigate browser to URL and return text", {"url": {"type": "string"}}),
+        "browser_read": (browser_read, "Read browser text at selector", {"selector": {"type": "string"}}),
+        "browser_click": (browser_click, "Click browser element", {"selector": {"type": "string"}}),
+        "browser_type": (browser_type, "Type text into browser selector", {"selector": {"type": "string"}, "text": {"type": "string"}}),
+        "browser_screenshot": (browser_screenshot, "Take browser screenshot", {}),
+        "browser_search": (browser_search, "Search web with DuckDuckGo", {"query": {"type": "string"}}),
+    }
+    for name, (fn, description, props) in native.items():
+        tools[name] = ToolBinding(spec=_spec(name, description, props, [k for k in props if k in {"cmd", "port", "baud", "message", "url", "query", "selector", "text"}]), fn=fn, trust_critical=name in {"bettercap_command", "serial_send", "browser_click", "browser_type"})
+
+    for sw in get_available_tools():
+        tools[sw.name] = ToolBinding(
+            spec=_spec(sw.name, f"Software binary {sw.name}: {sw.description}", {}, []),
+            fn=lambda _name=sw.name: {"name": _name, "available": bool(next((x for x in get_available_tools() if x.name == _name), None))},
+            source="software",
+            available=sw.available,
+            path=sw.path,
+        )
+
+    mcp = MCPHost()
+    mcp.startup()
+    for t in mcp.list_tools():
+        tools[t.name] = ToolBinding(spec=_spec(t.name, t.description, {"arguments": {"type": "object"}}, []), fn=lambda arguments=None, _name=t.name: mcp.call(_name, arguments or {}), source="mcp")
+
+    return tools
+
+
+def get_registered_tools(sandbox: Optional[Sandbox] = None, memory=None) -> List[ToolBinding]:
+    return list(default_tools(sandbox=sandbox, memory=memory).values())
 
 
 class ToolDispatcher:
@@ -44,7 +99,7 @@ class ToolDispatcher:
         self.approver = approver or (lambda name, args: True)
 
     def specs(self) -> List[ToolSpec]:
-        return [b.spec for b in self.bindings.values()]
+        return [b.spec for b in self.bindings.values() if b.available]
 
     def dispatch(self, name: str, arguments: Dict[str, Any], *, trace_id: str = "tr_tool", agent: str = "forge") -> Dict[str, Any]:
         binding = self.bindings.get(name)

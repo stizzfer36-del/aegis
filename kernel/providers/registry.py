@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import os
+import urllib.error
+import urllib.request
 from typing import List
 
 from .base import Provider, ProviderUnavailable
@@ -14,6 +16,15 @@ def _try(factory, *args, **kwargs):
         return None
     except Exception:  # noqa: BLE001
         return None
+
+
+def _ollama_available(base_url: str) -> bool:
+    req = urllib.request.Request(base_url.rstrip("/") + "/api/tags")
+    try:
+        with urllib.request.urlopen(req, timeout=2.0):
+            return True
+    except (urllib.error.URLError, TimeoutError, ValueError):
+        return False
 
 
 def get_provider(name: str, model: str = "") -> Provider:
@@ -42,47 +53,39 @@ def default_provider() -> Provider:
             return get_provider(requested, os.getenv("AEGIS_MODEL", ""))
         except ProviderUnavailable:
             pass
-    if os.getenv("ANTHROPIC_API_KEY"):
-        from .anthropic import AnthropicProvider
 
-        p = _try(AnthropicProvider, os.getenv("AEGIS_MODEL", "") or "claude-sonnet-4-6")
+    ollama_url = os.getenv("OLLAMA_URL", "http://localhost:11434")
+    if _ollama_available(ollama_url):
+        from .ollama import OllamaProvider
+
+        p = _try(OllamaProvider, os.getenv("AEGIS_MODEL", "") or "llama3.1:8b", ollama_url)
         if p is not None:
             return p
+
     if os.getenv("OPENAI_API_KEY"):
         from .openai import OpenAIProvider
 
         p = _try(OpenAIProvider, os.getenv("AEGIS_MODEL", "") or "gpt-4.1-mini")
         if p is not None:
             return p
-    if os.getenv("OLLAMA_URL") or os.getenv("AEGIS_TRY_OLLAMA"):
-        from .ollama import OllamaProvider
 
-        p = _try(OllamaProvider, os.getenv("AEGIS_MODEL", "") or "llama3.1:8b")
+    if os.getenv("ANTHROPIC_API_KEY"):
+        from .anthropic import AnthropicProvider
+
+        p = _try(AnthropicProvider, os.getenv("AEGIS_MODEL", "") or "claude-sonnet-4-6")
         if p is not None:
             return p
+
+    print("WARNING: AEGIS is running in echo mode. No real LLM is connected. Set OLLAMA_URL or an API key.")
     return EchoProvider()
 
 
 def available_providers() -> List[str]:
     out = ["echo"]
-    try:
-        import anthropic  # noqa: F401
-
-        if os.getenv("ANTHROPIC_API_KEY"):
-            out.append("anthropic")
-    except ImportError:
-        pass
-    try:
-        import openai  # noqa: F401
-
-        if os.getenv("OPENAI_API_KEY"):
-            out.append("openai")
-    except ImportError:
-        pass
-    try:
-        from .ollama import OllamaProvider
-
-        _try(OllamaProvider)
-    except Exception:  # noqa: BLE001
-        pass
+    if _ollama_available(os.getenv("OLLAMA_URL", "http://localhost:11434")):
+        out.append("ollama")
+    if os.getenv("OPENAI_API_KEY"):
+        out.append("openai")
+    if os.getenv("ANTHROPIC_API_KEY"):
+        out.append("anthropic")
     return out
