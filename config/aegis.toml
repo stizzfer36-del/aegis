@@ -1,0 +1,14 @@
+[kernel]
+event_log = "${AEGIS_EVENT_LOG}"
+memory_db = "${AEGIS_MEMORY_DB}"
+
+[services]
+nats_url = "${NATS_URL}"
+letta_url = "${LETTA_URL}"
+langfuse_url = "${LANGFUSE_URL}"
+ollama_url = "${OLLAMA_URL}"
+conduit_url = "${CONDUIT_URL}"
+
+[secrets]
+openai_api_key = "${OPENAI_API_KEY}"
+telegram_bot_token = "${TELEGRAM_BOT_TOKEN}"

@@ -1,0 +1,19 @@
+[build-system]
+requires = ["setuptools", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "aegis"
+version = "0.1.0"
+description = "AEGIS digital operating system"
+requires-python = ">=3.10"
+dependencies = []
+
+[project.optional-dependencies]
+dev = ["pytest"]
+
+[project.scripts]
+aegis = "kernel.introspect:main"
+
+[tool.setuptools]
+packages = ["kernel", "kernel.tools", "agents", "agents.warden", "agents.scribe", "agents.herald", "agents.forge", "agents.loop"]
