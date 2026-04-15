@@ -1,369 +1,206 @@
 from __future__ import annotations
 
+import unicodedata
 import uuid
-from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional
+from dataclasses import dataclass, replace
+from typing import Any
 
 from agents.forge import ForgeAgent
 from agents.herald import HeraldAgent
 from agents.loop import LoopAgent
 from agents.scribe import ScribeAgent
 from agents.warden import WardenAgent
-from kernel.bus import EventBus
-from kernel.events import (
-    AegisEvent,
-    Cost,
-    EventType,
-    PolicyState,
-    WealthImpact,
-    now_utc,
-)
-from kernel.memory import MemoryClient
-from kernel.policy import PolicyDecision, PolicyGate
-from kernel.providers import Provider, default_provider
-from kernel.router import ModelRouter
-from kernel.tools import Sandbox, ToolDispatcher
-
-COST_PER_TOKEN_USD = 0.000002
-
-
-def estimate_tokens(text: str) -> int:
-    cleaned = (text or "").strip()
-    if not cleaned:
-        return 0
-    return max(1, len(cleaned) // 4)
+from kernel.anomaly import AnomalyDetector
+from kernel.checkpoint import CheckpointStore
+from kernel.core.bus import EventBus
+from kernel.core.events import AegisEvent, Cost, EventType, PolicyState, WealthImpact, now_utc
+from kernel.core.memory import MemoryClient
+from kernel.core.policy import PolicyGate
+from kernel.core.providers import Provider, default_provider
+from kernel.core.router import ModelRouter
+from kernel.core.tools import ToolDispatcher
+from kernel.outcome import OutcomeStore
+from kernel.provenance import ProvenanceStore
+from kernel.scheduler import Scheduler
+from kernel.state_sync import StateSyncStore
 
 
 @dataclass
 class TraceResult:
     trace_id: str
+    status: str
     intent: str
-    channel: str
-    warden: Dict[str, Any]
-    plan: List[str]
-    execution: Dict[str, Any]
-    memory_writes: List[int]
-    events: List[Dict[str, Any]] = field(default_factory=list)
-    cost_usd: float = 0.0
-    wealth_usd: float = 0.0
-    status: str = "completed"
+    cost_usd: float
+    events: list[dict[str, Any]]
+    classification: dict[str, Any]
+    policy: dict[str, Any]
+    plan: dict[str, Any]
+    execution: dict[str, Any]
+    memory: dict[str, Any]
 
-    def to_dict(self) -> Dict[str, Any]:
+    def to_dict(self) -> dict[str, Any]:
         return {
             "trace_id": self.trace_id,
+            "status": self.status,
             "intent": self.intent,
-            "channel": self.channel,
-            "warden": self.warden,
+            "cost_usd": self.cost_usd,
+            "events": self.events,
+            "classification": self.classification,
+            "policy": self.policy,
             "plan": self.plan,
             "execution": self.execution,
-            "memory_writes": self.memory_writes,
-            "events": self.events,
-            "cost_usd": self.cost_usd,
-            "wealth_usd": self.wealth_usd,
-            "status": self.status,
+            "memory": self.memory,
         }
 
 
 class Orchestrator:
-    def __init__(
-        self,
-        provider: Optional[Provider] = None,
-        bus: Optional[EventBus] = None,
-        memory: Optional[MemoryClient] = None,
-        policy: Optional[PolicyGate] = None,
-        router: Optional[ModelRouter] = None,
-        sandbox: Optional[Sandbox] = None,
-        dispatcher: Optional[ToolDispatcher] = None,
-        budget_usd: float = 1.0,
-    ) -> None:
+    def __init__(self, provider: Provider | None = None):
+        self.bus = EventBus()
+        self.memory = MemoryClient()
+        self.policy_gate = PolicyGate()
+        self.router = ModelRouter()
+        self.outcome = OutcomeStore()
+        self.anomaly = AnomalyDetector(self.bus)
+        self.checkpoint = CheckpointStore(self.outcome)
+        self.provenance = ProvenanceStore()
+        self.state_sync = StateSyncStore()
+        self.scheduler = Scheduler()
         self.provider = provider or default_provider()
-        self.bus = bus or EventBus()
-        self.memory = memory or MemoryClient()
-        self.policy = policy or PolicyGate(max_auto_spend_usd=max(budget_usd * 20, 5.0))
-        self.router = router or ModelRouter()
-        self.sandbox = sandbox or Sandbox.default()
-        self.dispatcher = dispatcher or ToolDispatcher(policy=self.policy, bus=self.bus)
-        self.budget_usd = budget_usd
+        self.dispatcher = ToolDispatcher(policy=self.policy_gate, bus=self.bus)
 
-        self.warden = WardenAgent(self.bus, provider=self.provider, consult=False)
-        self.scribe = ScribeAgent(self.bus, provider=self.provider, memory=self.memory)
-        self.herald = HeraldAgent(self.bus, provider=self.provider)
-        self.loop = LoopAgent(self.bus, provider=self.provider)
-        self.forge = ForgeAgent(self.bus, provider=self.provider, dispatcher=self.dispatcher)
+        self.herald = HeraldAgent(self.bus, "herald", self.provider)
+        self.warden = WardenAgent(self.bus, "warden", self.provider, anomaly=self.anomaly)
+        self.loop = LoopAgent(self.bus, "loop", self.provider, scheduler=self.scheduler, memory=self.memory, outcome=self.outcome, state_sync=self.state_sync)
+        self.forge = ForgeAgent(self.bus, "forge", self.provider, dispatcher=self.dispatcher, outcome=self.outcome, checkpoint=self.checkpoint, provenance=self.provenance)
+        self.scribe = ScribeAgent(self.bus, "scribe", self.provider, memory=self.memory)
 
-    def run_intent(
-        self,
-        intent: str,
-        *,
-        channel: str = "terminal",
-        external_id: Optional[str] = None,
-        trace_id: Optional[str] = None,
-        wealth_projection_usd: float = 0.0,
-    ) -> TraceResult:
-        trace_id = trace_id or f"tr_{uuid.uuid4().hex[:10]}"
-        events: List[Dict[str, Any]] = []
+    @staticmethod
+    def estimate_tokens(text: str) -> int:
+        cjk = sum(1 for c in text if unicodedata.east_asian_width(c) in ("W", "F"))
+        return max(1, cjk + (len(text) - cjk) // 4)
 
-        intake = self._build_event(
+    def _with_policy_state(self, event: AegisEvent) -> AegisEvent:
+        decision = self.policy_gate.evaluate(event)
+        mapping = {
+            "approved": PolicyState.APPROVED,
+            "needs_approval": PolicyState.NEEDS_APPROVAL,
+            "rejected": PolicyState.REJECTED,
+        }
+        return replace(event, policy_state=mapping.get(decision.decision, PolicyState.APPROVED))
+
+    def run_intent(self, intent: str, channel: str = "terminal") -> TraceResult:
+        trace_id = uuid.uuid4().hex
+        events: list[dict[str, Any]] = []
+
+        human_event = AegisEvent(
             trace_id=trace_id,
             event_type=EventType.HUMAN_INTENT,
-            agent="kernel",
+            ts=now_utc(),
+            agent="human",
             intent_ref=intent,
-            consequence="intent received by kernel",
-            wealth_type="projected",
-            wealth_value=wealth_projection_usd,
-            payload={"channel": channel, "external_id": external_id or trace_id},
+            consequence_summary="intent accepted",
+            cost=Cost(tokens=self.estimate_tokens(intent), dollars=0.0),
+            wealth_impact=WealthImpact("neutral", 0.0),
+            policy_state=PolicyState.APPROVED,
+            payload={"channel": channel},
         )
-        self.bus.publish(intake)
-        events.append(intake.to_dict())
+        self.bus.publish(human_event)
+        events.append(human_event.to_dict())
 
-        herald_out = self.herald.on_wake(intake)
-        events.append(
-            self._publish_status(
-                trace_id,
-                "herald",
-                herald_out.summary,
-                EventType.AGENT_THINKING,
-            )
-        )
-
-        warden_out = self.warden.on_wake(intake)
-        events.append(
-            self._publish_status(
-                trace_id,
-                "warden",
-                warden_out.summary,
-                EventType.POLICY_DECISION,
-                payload=warden_out.details,
-            )
-        )
-        if warden_out.details.get("block"):
-            status = "rejected"
-            self._close(trace_id, status, intent, cost_usd=0.0, wealth_usd=0.0)
-            return TraceResult(
+        classification = self.herald.on_wake(human_event).details
+        policy_output = self.warden.on_wake(human_event).details
+        if policy_output.get("block"):
+            rejected_summary = str(policy_output.get("reason", "blocked by policy"))
+            self.outcome.record(trace_id, intent, "rejected", 0.0, rejected_summary)
+            result = TraceResult(
                 trace_id=trace_id,
+                status="rejected",
                 intent=intent,
-                channel=channel,
-                warden=warden_out.details,
-                plan=[],
-                execution={"skipped": True, "reason": "warden_blocked"},
-                memory_writes=[],
+                cost_usd=0.0,
                 events=events,
-                status=status,
+                classification=classification,
+                policy=policy_output,
+                plan={},
+                execution={},
+                memory={},
             )
+            self.bus.close()
+            return result
 
-        plan_out = self.loop.on_wake(intake)
-        plan = plan_out.details.get("plan", [])
-        events.append(
-            self._publish_status(
-                trace_id,
-                "loop",
-                plan_out.summary,
-                EventType.AGENT_DESIGN,
-                payload={"plan": plan},
-            )
-        )
-
-        execute_intent = f"{intent}\n\nFirst step: {plan[0] if plan else intent}"
-        exec_event = self._build_event(
+        design_event = AegisEvent(
             trace_id=trace_id,
-            event_type=EventType.AGENT_EXECUTE,
+            event_type=EventType.AGENT_DESIGN,
+            ts=now_utc(),
             agent="loop",
             intent_ref=intent,
-            consequence=f"forge executes step 1 of {len(plan) or 1}",
-            wealth_type="projected",
-            wealth_value=wealth_projection_usd,
-            payload={"goal": execute_intent, "plan": plan, "channel": channel},
+            consequence_summary="designing execution plan",
+            cost=Cost(tokens=0, dollars=0.0),
+            wealth_impact=WealthImpact("neutral", 0.0),
+            policy_state=PolicyState.APPROVED,
+            payload={"classification": classification},
         )
-        decision = self.policy.evaluate(exec_event)
-        if decision.decision == "rejected":
-            events.append(
-                self._publish_status(
-                    trace_id,
-                    "policy",
-                    decision.reason,
-                    EventType.POLICY_DECISION,
-                    payload={"decision": decision.decision, "rule": decision.matched_rule},
-                )
-            )
-            self._close(trace_id, "rejected", intent, cost_usd=0.0, wealth_usd=0.0)
-            return TraceResult(
-                trace_id=trace_id,
-                intent=intent,
-                channel=channel,
-                warden=warden_out.details,
-                plan=plan,
-                execution={"skipped": True, "reason": decision.reason},
-                memory_writes=[],
-                events=events,
-                status="rejected",
-            )
+        self.bus.publish(design_event)
+        events.append(design_event.to_dict())
+        plan_output = self.loop.on_wake(design_event).details
 
-        self.bus.publish(exec_event)
-        events.append(exec_event.to_dict())
-        forge_out = self.forge.on_wake(exec_event)
-        exec_details = forge_out.details
-        cost = float(exec_details.get("cost_usd") or 0.0)
-
-        events.append(
-            self._publish_status(
-                trace_id,
-                "forge",
-                forge_out.summary,
-                EventType.AGENT_MAP_CONSEQUENCE,
-                payload={
-                    "steps": len(exec_details.get("steps", [])),
-                    "stop_reason": exec_details.get("stop_reason"),
-                    "cost_usd": cost,
-                },
-                cost_usd=cost,
-            )
-        )
-
-        map_event = self._build_event(
+        exec_event = AegisEvent(
             trace_id=trace_id,
-            event_type=EventType.AGENT_MAP_CONSEQUENCE,
+            event_type=EventType.AGENT_EXECUTE,
+            ts=now_utc(),
             agent="forge",
             intent_ref=intent,
-            consequence=exec_details.get("final_text", "execution complete")[:200]
-            or "execution complete",
-            tokens=int(exec_details.get("output_tokens") or 0),
-            cost_usd=cost,
-            wealth_type="realized",
-            wealth_value=wealth_projection_usd,
-            payload={"plan": plan, "final_text": exec_details.get("final_text", "")},
+            consequence_summary="executing user intent",
+            cost=Cost(tokens=0, dollars=0.0),
+            wealth_impact=WealthImpact("neutral", 0.0),
+            policy_state=PolicyState.APPROVED,
+            payload={"goal": intent, "plan": plan_output.get("plan", [])},
         )
-        self.bus.publish(map_event)
+        exec_event = self._with_policy_state(exec_event)
+        events.append(exec_event.to_dict())
+        if exec_event.policy_state == PolicyState.REJECTED:
+            self.outcome.record(trace_id, intent, "rejected", 0.0, "execution policy rejected")
+            result = TraceResult(trace_id, "rejected", intent, 0.0, events, classification, policy_output, plan_output, {}, {})
+            self.bus.close()
+            return result
 
-        scribe_out = self.scribe.on_wake(map_event)
-        memory_writes = [int(scribe_out.details.get("memory_id") or 0)]
-        events.append(
-            self._publish_status(
-                trace_id,
-                "scribe",
-                scribe_out.summary,
-                EventType.REMEMBER_CANDIDATE,
-            )
+        execution = self.forge.on_wake(exec_event).details
+        consequence_event = AegisEvent(
+            trace_id=trace_id,
+            event_type=EventType.AGENT_MAP_CONSEQUENCE,
+            ts=now_utc(),
+            agent="scribe",
+            intent_ref=intent,
+            consequence_summary="mapping execution consequences to memory",
+            cost=Cost(tokens=0, dollars=0.0),
+            wealth_impact=WealthImpact("neutral", 0.0),
+            policy_state=PolicyState.APPROVED,
+            payload=execution,
         )
+        self.bus.publish(consequence_event)
+        events.append(consequence_event.to_dict())
 
-        if wealth_projection_usd:
-            wealth_event = self._build_event(
+        memory = self.scribe.on_wake(consequence_event).details
+        cost_usd = float(execution.get("cost_usd", 0.0))
+        status = "completed"
+        self.outcome.record(trace_id, intent, status, cost_usd, execution.get("final_text", "completed"))
+
+        wealth_projection_usd = float(execution.get("wealth_projection_usd", 0.0) or 0.0)
+        if wealth_projection_usd > 0:
+            wealth_event = AegisEvent(
                 trace_id=trace_id,
                 event_type=EventType.WEALTH_GENERATED,
-                agent="kernel",
+                ts=now_utc(),
+                agent="orchestrator",
                 intent_ref=intent,
-                consequence="wealth projection realised",
-                cost_usd=cost,
-                wealth_type="realized",
-                wealth_value=wealth_projection_usd,
+                consequence_summary="wealth generated from execution",
+                cost=Cost(tokens=0, dollars=0.0),
+                wealth_impact=WealthImpact("positive", wealth_projection_usd),
+                policy_state=PolicyState.APPROVED,
+                payload={"wealth_projection_usd": wealth_projection_usd},
             )
             self.bus.publish(wealth_event)
             events.append(wealth_event.to_dict())
 
-        return TraceResult(
-            trace_id=trace_id,
-            intent=intent,
-            channel=channel,
-            warden=warden_out.details,
-            plan=plan,
-            execution=exec_details,
-            memory_writes=memory_writes,
-            events=events,
-            cost_usd=cost,
-            wealth_usd=wealth_projection_usd,
-            status="completed",
-        )
-
-    def _build_event(
-        self,
-        *,
-        trace_id: str,
-        event_type: EventType,
-        agent: str,
-        intent_ref: str,
-        consequence: str,
-        payload: Optional[Dict[str, Any]] = None,
-        tokens: int = 0,
-        cost_usd: float = 0.0,
-        wealth_type: str = "neutral",
-        wealth_value: float = 0.0,
-    ) -> AegisEvent:
-        base = AegisEvent(
-            trace_id=trace_id,
-            event_type=event_type,
-            ts=now_utc(),
-            agent=agent,
-            intent_ref=intent_ref,
-            cost=Cost(tokens=tokens, dollars=cost_usd),
-            consequence_summary=consequence,
-            wealth_impact=WealthImpact(type=wealth_type, value=wealth_value),
-            policy_state=PolicyState.APPROVED,
-            payload=payload or {},
-        )
-        return self._with_policy_state(base)
-
-    def _with_policy_state(self, event: AegisEvent) -> AegisEvent:
-        decision: PolicyDecision = self.policy.evaluate(event)
-        if decision.decision == "approved":
-            state = PolicyState.APPROVED
-        elif decision.decision == "needs_approval":
-            state = PolicyState.NEEDS_APPROVAL
-        else:
-            state = PolicyState.REJECTED
-        return AegisEvent(
-            trace_id=event.trace_id,
-            event_type=event.event_type,
-            ts=event.ts,
-            agent=event.agent,
-            intent_ref=event.intent_ref,
-            cost=event.cost,
-            consequence_summary=event.consequence_summary,
-            wealth_impact=event.wealth_impact,
-            policy_state=state,
-            payload=event.payload,
-            parent_event_id=event.parent_event_id,
-            tags=event.tags,
-        )
-
-    def _publish_status(
-        self,
-        trace_id: str,
-        agent: str,
-        summary: str,
-        event_type: EventType,
-        *,
-        payload: Optional[Dict[str, Any]] = None,
-        cost_usd: float = 0.0,
-    ) -> Dict[str, Any]:
-        event = self._build_event(
-            trace_id=trace_id,
-            event_type=event_type,
-            agent=agent,
-            intent_ref=f"status:{agent}",
-            consequence=summary,
-            payload=payload,
-            cost_usd=cost_usd,
-        )
-        self.bus.publish(event)
-        return event.to_dict()
-
-    def _close(
-        self,
-        trace_id: str,
-        status: str,
-        intent: str,
-        *,
-        cost_usd: float,
-        wealth_usd: float,
-    ) -> None:
-        self.bus.publish(
-            self._build_event(
-                trace_id=trace_id,
-                event_type=EventType.SYSTEM_RECOVER,
-                agent="kernel",
-                intent_ref=intent,
-                consequence=f"trace closed: {status}",
-                cost_usd=cost_usd,
-                wealth_value=wealth_usd,
-                payload={"status": status},
-            )
-        )
+        result = TraceResult(trace_id, status, intent, cost_usd, events, classification, policy_output, plan_output, execution, memory)
+        self.bus.close()
+        return result

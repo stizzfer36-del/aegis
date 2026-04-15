@@ -3,12 +3,13 @@ from __future__ import annotations
 import argparse
 from pathlib import Path
 
+from kernel.tools import summarize_event
+
 from kernel.bus import EventBus
 from kernel.events import AegisEvent, Cost, EventType, PolicyState, WealthImpact, now_utc
 from kernel.memory import MemoryClient
 from kernel.policy import PolicyGate
 from kernel.router import ModelRouter
-from kernel.tools import summarize_event
 
 
 def cmd_trace(trace_id: str = "") -> None:

@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 from kernel.memory import MemoryClient
 from kernel.protocols.base import BaseProtocol
@@ -10,19 +10,19 @@ from kernel.protocols.base import BaseProtocol
 @dataclass
 class DriverResponse:
     ok: bool
-    data: Dict[str, Any]
+    data: dict[str, Any]
 
 
 class BaseDriver:
     name = "base"
-    capabilities: List[str] = []
+    capabilities: list[str] = []
 
-    def __init__(self, protocol: BaseProtocol, memory: Optional[MemoryClient] = None, trace_id: str = "driver") -> None:
+    def __init__(self, protocol: BaseProtocol, memory: MemoryClient | None = None, trace_id: str = "driver") -> None:
         self.protocol = protocol
         self.memory = memory or MemoryClient()
         self.trace_id = trace_id
 
-    def execute(self, capability: str, payload: Dict[str, Any]) -> DriverResponse:
+    def execute(self, capability: str, payload: dict[str, Any]) -> DriverResponse:
         if capability not in self.capabilities:
             raise ValueError(f"unsupported capability: {capability}")
         response = self.protocol.send(str(payload.get("command", capability)), expect_response=True)

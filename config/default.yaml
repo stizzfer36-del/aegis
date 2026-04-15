@@ -1,0 +1,7 @@
+aegis:
+  data_dir: ".aegis"
+  workspace_dir: ".aegis/workspace"
+  lens_port: 7771
+  budget_usd: 1.0
+  default_model: "anthropic/claude-opus-4-5"
+  log_level: "INFO"

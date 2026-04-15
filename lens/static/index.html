@@ -1,0 +1,115 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>AEGIS Lens</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+</head>
+<body class="bg-zinc-950 text-zinc-100 min-h-screen">
+  <div class="max-w-7xl mx-auto px-4 py-6 space-y-6">
+    <header class="flex items-center justify-between">
+      <h1 class="text-3xl font-bold tracking-wide">AEGIS</h1>
+      <div class="text-sm text-zinc-400">Uptime: <span id="uptime">0s</span></div>
+    </header>
+
+    <section class="bg-zinc-900 border border-zinc-800 rounded p-4">
+      <h2 class="font-semibold mb-3">Run Intent</h2>
+      <div class="flex gap-2">
+        <input id="intentInput" class="flex-1 bg-zinc-950 border border-zinc-700 rounded px-3 py-2" placeholder="Describe what AEGIS should do" />
+        <button id="intentBtn" class="bg-blue-600 hover:bg-blue-500 rounded px-4 py-2">Submit</button>
+      </div>
+      <pre id="intentOutput" class="mt-3 p-3 bg-zinc-950 border border-zinc-800 rounded text-xs overflow-auto max-h-72"></pre>
+    </section>
+
+    <section class="grid grid-cols-1 md:grid-cols-2 gap-4">
+      <div class="bg-zinc-900 border border-zinc-800 rounded p-4">
+        <h2 class="font-semibold mb-3">Metrics</h2>
+        <pre id="metrics" class="text-xs"></pre>
+      </div>
+      <div class="bg-zinc-900 border border-zinc-800 rounded p-4">
+        <h2 class="font-semibold mb-3">Memory Search</h2>
+        <div class="flex gap-2 mb-2">
+          <input id="memoryQuery" class="flex-1 bg-zinc-950 border border-zinc-700 rounded px-3 py-2" placeholder="Search memory" />
+          <button id="memoryBtn" class="bg-emerald-600 hover:bg-emerald-500 rounded px-4 py-2">Find</button>
+        </div>
+        <pre id="memoryOutput" class="text-xs max-h-72 overflow-auto"></pre>
+      </div>
+    </section>
+
+    <section class="bg-zinc-900 border border-zinc-800 rounded p-4">
+      <h2 class="font-semibold mb-3">Recent Events</h2>
+      <div class="overflow-auto">
+        <table class="min-w-full text-xs">
+          <thead class="text-zinc-400">
+            <tr>
+              <th class="text-left py-1 pr-2">Time</th>
+              <th class="text-left py-1 pr-2">Trace</th>
+              <th class="text-left py-1 pr-2">Type</th>
+              <th class="text-left py-1 pr-2">Agent</th>
+              <th class="text-left py-1">Summary</th>
+            </tr>
+          </thead>
+          <tbody id="eventsBody"></tbody>
+        </table>
+      </div>
+    </section>
+  </div>
+
+  <script>
+    async function loadMetrics() {
+      const res = await fetch('/metrics');
+      const data = await res.json();
+      document.getElementById('metrics').textContent = JSON.stringify(data, null, 2);
+      document.getElementById('uptime').textContent = `${Math.floor(data.uptime_seconds)}s`;
+    }
+
+    async function loadEvents() {
+      const res = await fetch('/events?limit=30');
+      const rows = await res.json();
+      const body = document.getElementById('eventsBody');
+      body.innerHTML = '';
+      rows.reverse().forEach((ev) => {
+        const tr = document.createElement('tr');
+        tr.className = 'border-t border-zinc-800';
+        tr.innerHTML = `
+          <td class="py-1 pr-2">${ev.ts || ''}</td>
+          <td class="py-1 pr-2">${ev.trace_id || ''}</td>
+          <td class="py-1 pr-2">${ev.event_type || ''}</td>
+          <td class="py-1 pr-2">${ev.agent || ''}</td>
+          <td class="py-1">${ev.consequence_summary || ''}</td>
+        `;
+        body.appendChild(tr);
+      });
+    }
+
+    document.getElementById('intentBtn').addEventListener('click', async () => {
+      const intent = document.getElementById('intentInput').value.trim();
+      if (!intent) return;
+      const output = document.getElementById('intentOutput');
+      output.textContent = 'Running...';
+      const res = await fetch('/intent', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({ intent, channel: 'lens' })
+      });
+      const data = await res.json();
+      output.textContent = JSON.stringify(data, null, 2);
+      await loadMetrics();
+      await loadEvents();
+    });
+
+    document.getElementById('memoryBtn').addEventListener('click', async () => {
+      const q = document.getElementById('memoryQuery').value.trim();
+      const res = await fetch(`/memory?q=${encodeURIComponent(q)}&limit=20`);
+      const data = await res.json();
+      document.getElementById('memoryOutput').textContent = JSON.stringify(data, null, 2);
+    });
+
+    loadMetrics();
+    loadEvents();
+    setInterval(loadMetrics, 3000);
+    setInterval(loadEvents, 3000);
+  </script>
+</body>
+</html>

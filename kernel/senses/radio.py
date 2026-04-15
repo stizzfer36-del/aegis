@@ -2,10 +2,10 @@ from __future__ import annotations
 
 import json
 import subprocess
-from typing import Any, Dict, List
+from typing import Any
 
 
-def wifi_scan() -> Dict[str, Any]:
+def wifi_scan() -> dict[str, Any]:
     try:
         from scapy.all import Dot11, sniff  # type: ignore
 
@@ -50,9 +50,10 @@ def wifi_scan() -> Dict[str, Any]:
         return {"error": f"wifi scan unavailable: {exc}", "networks": []}
 
 
-def bluetooth_scan(timeout: float = 5.0) -> Dict[str, Any]:
+def bluetooth_scan(timeout: float = 5.0) -> dict[str, Any]:
     try:
         import asyncio
+
         from bleak import BleakScanner
 
         async def _scan():
@@ -64,7 +65,7 @@ def bluetooth_scan(timeout: float = 5.0) -> Dict[str, Any]:
         return {"error": f"bluetooth scan unavailable: {exc}", "devices": []}
 
 
-def bettercap_command(cmd: str) -> Dict[str, Any]:
+def bettercap_command(cmd: str) -> dict[str, Any]:
     import urllib.request
 
     payload = json.dumps({"cmd": cmd}).encode("utf-8")
@@ -73,14 +74,14 @@ def bettercap_command(cmd: str) -> Dict[str, Any]:
         return json.loads(resp.read().decode("utf-8"))
 
 
-def network_scan(target: str = "192.168.1.0/24") -> Dict[str, Any]:
+def network_scan(target: str = "192.168.1.0/24") -> dict[str, Any]:
     try:
         import nmap
     except ImportError as exc:
         raise ImportError("python-nmap not installed — pip install python-nmap") from exc
     scanner = nmap.PortScanner()
     scanner.scan(hosts=target, arguments="-sV -O --open")
-    hosts: List[Dict[str, Any]] = []
+    hosts: list[dict[str, Any]] = []
     for host in scanner.all_hosts():
         tcp = scanner[host].get("tcp", {})
         ports = [int(p) for p, pdata in tcp.items() if pdata.get("state") == "open"]

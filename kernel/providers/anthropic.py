@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import os
-from typing import List, Optional
 
 from .base import Completion, Message, ProviderError, ProviderUnavailable, ToolCall, ToolSpec
 
@@ -17,7 +16,7 @@ _PRICING = {
 class AnthropicProvider:
     name = "anthropic"
 
-    def __init__(self, model: str = "claude-sonnet-4-6", api_key: Optional[str] = None) -> None:
+    def __init__(self, model: str = "claude-sonnet-4-6", api_key: str | None = None) -> None:
         try:
             import anthropic  # type: ignore
         except ImportError as exc:
@@ -28,7 +27,7 @@ class AnthropicProvider:
         self.model = model
         self._client = anthropic.Anthropic(api_key=key)
 
-    def complete(self, messages: List[Message], tools: Optional[List[ToolSpec]] = None, max_tokens: int = 1024, temperature: float = 0.2, system: Optional[str] = None) -> Completion:
+    def complete(self, messages: list[Message], tools: list[ToolSpec] | None = None, max_tokens: int = 1024, temperature: float = 0.2, system: str | None = None) -> Completion:
         sys_text = system or ""
         api_messages = []
         for m in messages:
@@ -57,8 +56,8 @@ class AnthropicProvider:
         except Exception as exc:  # noqa: BLE001
             raise ProviderError(f"anthropic call failed: {exc}") from exc
 
-        text_parts: List[str] = []
-        tool_calls: List[ToolCall] = []
+        text_parts: list[str] = []
+        tool_calls: list[ToolCall] = []
         for block in resp.content:
             btype = getattr(block, "type", None)
             if btype == "text":

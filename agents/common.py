@@ -1,37 +1,53 @@
 from __future__ import annotations
 
-from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional
+from abc import ABC, abstractmethod
+from dataclasses import dataclass
+from typing import Any
 
-from kernel.bus import EventBus
-from kernel.events import AegisEvent
+from kernel.core.bus import EventBus
+from kernel.core.events import AegisEvent, EventType
+from kernel.core.providers.base import Provider
 
 
 @dataclass
 class AgentOutput:
-    agent: str
     summary: str
-    next_event_type: str
-    details: Dict[str, Any] = field(default_factory=dict)
+    details: dict[str, Any]
 
 
-class BaseAgent:
-    name = "base"
-    subscriptions: List[str] = []
+class AgentBase(ABC):
+    SUBSCRIBED_EVENTS: list[EventType] = []
 
-    def __init__(self, bus: Optional[EventBus] = None, provider: Optional[Any] = None, **kwargs: Any) -> None:
-        self.bus = bus or EventBus()
+    def __init__(self, bus: EventBus, name: str, provider: Provider):
+        self.bus = bus
+        self.name = name
         self.provider = provider
 
     def bind(self) -> None:
-        for sub in self.subscriptions:
-            self.bus.subscribe(sub, self._make_handler())
+        for et in self.SUBSCRIBED_EVENTS:
+            self.bus.subscribe(et.value, self.on_event)
 
-    def _make_handler(self):
-        def _handler(event: AegisEvent) -> None:
-            self.on_wake(event)
+    @abstractmethod
+    def on_event(self, event: AegisEvent) -> None:
+        raise RuntimeError("subclass must implement on_event")
 
-        return _handler
-
+    @abstractmethod
     def on_wake(self, event: AegisEvent) -> AgentOutput:
-        raise NotImplementedError
+        raise RuntimeError("subclass must implement on_wake")
+
+    def _chat(
+        self,
+        system: str,
+        user: str,
+        model: str | None = None,
+        max_tokens: int = 2048,
+    ) -> str:
+        messages = [
+            {"role": "system", "content": system},
+            {"role": "user", "content": user},
+        ]
+        return self.provider.complete(
+            messages,
+            model=model or "anthropic/claude-opus-4-5",
+            max_tokens=max_tokens,
+        )

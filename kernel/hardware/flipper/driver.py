@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-from typing import Dict, List
-
 from kernel.hardware.base import BaseDriver, DriverResponse
 from kernel.hardware.flipper.rpc import decode_message, encode_message
 from kernel.protocols.serial_cdc import Serial_cdcProtocol
@@ -17,14 +15,14 @@ class FlipperDriver(BaseDriver):
 
     def __init__(self, protocol: Serial_cdcProtocol) -> None:
         super().__init__(protocol)
-        self.breakpoints: Dict[str, str] = {"nfc": "0.99.0", "subghz": "0.90.0"}
+        self.breakpoints: dict[str, str] = {"nfc": "0.99.0", "subghz": "0.90.0"}
 
     def check_firmware(self, category: str) -> bool:
         fw = str(self.protocol.fingerprint.get("firmware_version", "0.0.0"))
         required = self.breakpoints.get(category, "0.0.0")
         return fw >= required
 
-    def execute(self, capability: str, payload: Dict[str, str]) -> DriverResponse:
+    def execute(self, capability: str, payload: dict[str, str]) -> DriverResponse:
         if capability.startswith("nfc") and not self.check_firmware("nfc"):
             raise ValueError("firmware mismatch: nfc requires upgrade")
         command = encode_message(capability, payload)

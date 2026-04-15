@@ -1,106 +1,70 @@
-"""Scribe: compounding memory agent.
-
-Scribe writes observations to memory with provenance, and retrieves relevant
-prior knowledge on request. The TF-IDF search lives in MemoryClient; Scribe
-decides what is worth remembering (candidate filtering) and how to phrase the
-retrieval brief.
-"""
-
 from __future__ import annotations
 
-from typing import Any, Dict, List, Optional
+import json
 
-from agents.common import AgentOutput, BaseAgent
-from kernel.events import AegisEvent, EventType
-from kernel.memory import MemoryClient
+from agents.common import AgentBase, AgentOutput
+from kernel.core.events import AegisEvent, EventType, now_utc
+from kernel.core.memory import MemoryClient
 
 
-class ScribeAgent(BaseAgent):
+class ScribeAgent(AgentBase):
     name = "scribe"
-    subscriptions = [
-        EventType.REMEMBER_CANDIDATE.value,
-        EventType.AGENT_MAP_CONSEQUENCE.value,
-    ]
+    SUBSCRIBED_EVENTS = [EventType.AGENT_MAP_CONSEQUENCE]
 
-    def __init__(self, bus, provider=None, memory: Optional[MemoryClient] = None, **kwargs) -> None:
-        super().__init__(bus, provider=provider, **kwargs)
-        self.memory = memory or MemoryClient()
+    def __init__(self, bus, name, provider, memory: MemoryClient):
+        super().__init__(bus, name, provider)
+        self.memory = memory
+
+    SYSTEM_PROMPT = """
+  You are Scribe, the memory agent for AEGIS.
+  Given an execution result, extract and structure the key knowledge to remember.
+
+  Respond ONLY in valid JSON:
+  {
+    "topic": "one of: [project, code, research, preference, error, success, context]",
+    "preference": "optional user preference extracted, or empty string",
+    "content": {
+      "summary": "what happened",
+      "key_facts": ["fact1", "fact2"],
+      "files_created": [],
+      "commands_run": [],
+      "outcome": "success|partial|failure"
+    },
+    "importance": "low|medium|high"
+  }
+  """
 
     def on_wake(self, event: AegisEvent) -> AgentOutput:
-        topic = _topic_for(event)
-        content = _content_for(event)
-        existing = self.memory.search(topic, k=1)
-        if existing:
-            existing_content = existing[0].get("content", {})
-            if len(_as_text(content)) < len(_as_text(existing_content)):
-                return AgentOutput(
-                    agent=self.name,
-                    summary="memory write skipped (shorter duplicate)",
-                    next_event_type=EventType.REMEMBER_CANDIDATE.value,
-                    details={"skipped": True, "topic": topic},
-                )
-
-        mid = self.memory.write_candidate(
-            trace_id=event.trace_id,
-            topic=topic,
-            content=content,
-            provenance={
-                "agent": self.name,
-                "source_event": event.event_type.value,
-                "source_agent": event.agent,
-                "trace_id": event.trace_id,
-            },
-            preference=event.payload.get("preference", "") or "",
-        )
-        if self.memory.count_by_topic(topic) >= 3:
-            self.bus.publish(
-                AegisEvent(
-                trace_id=event.trace_id,
-                event_type=EventType.SKILL_PROMOTED,
-                ts=event.ts,
-                agent=self.name,
-                intent_ref=event.intent_ref,
-                cost=event.cost,
-                consequence_summary=f"topic promoted: {topic}",
-                wealth_impact=event.wealth_impact,
-                policy_state=event.policy_state,
-                payload={"topic": topic, "memory_id": mid},
-                )
+        execution_summary = json.dumps(event.payload, ensure_ascii=False)[:3000]
+        try:
+            response = self._chat(
+                self.SYSTEM_PROMPT,
+                f"Intent: {event.intent_ref}\n\nResult: {execution_summary}",
+                model="openai/gpt-4o-mini",
+                max_tokens=1024,
             )
-        return AgentOutput(
-            agent=self.name,
-            summary=f"memory write accepted id={mid}",
-            next_event_type=EventType.REMEMBER_CANDIDATE.value,
-            details={"memory_id": mid},
-        )
+            parsed = json.loads(response)
+            topic = parsed.get("topic", "context")
+            memory_id = self.memory.write_candidate(
+                trace_id=event.trace_id,
+                topic=topic,
+                content=parsed.get("content", {"summary": event.intent_ref}),
+                provenance={
+                    "agent": "scribe",
+                    "intent": event.intent_ref,
+                    "ts": now_utc(),
+                },
+                preference=parsed.get("preference", ""),
+            )
+            return AgentOutput(
+                summary=f"memory written: topic={topic}",
+                details={"memory_id": memory_id},
+            )
+        except Exception:
+            return AgentOutput(
+                summary="memory write failed",
+                details={"memory_id": 0},
+            )
 
-    def recall(self, query: str, k: int = 5) -> List[Dict[str, Any]]:
-        return self.memory.search(query, k=k)
-
-
-def _topic_for(event: AegisEvent) -> str:
-    return (event.intent_ref or "").strip().lower()
-
-
-def _content_for(event: AegisEvent) -> Dict[str, Any]:
-    output_text = (
-        event.payload.get("output")
-        or event.payload.get("final_text")
-        or event.payload.get("stdout")
-        or event.payload.get("summary")
-        or event.consequence_summary
-    )
-    return {
-        "output": output_text,
-        "summary": event.consequence_summary,
-        "intent": event.intent_ref,
-        "wealth": event.wealth_impact.value,
-        "cost_usd": event.cost.dollars,
-        "payload": event.payload,
-    }
-
-
-def _as_text(content: Any) -> str:
-    if isinstance(content, dict):
-        return str(content.get("output") or content.get("summary") or content)
-    return str(content)
+    def on_event(self, event: AegisEvent) -> None:
+        _ = self.on_wake(event)

@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import json
 import os
-from typing import List, Optional
 
 from .base import Completion, Message, ProviderError, ProviderUnavailable, ToolCall, ToolSpec
 
@@ -18,7 +17,7 @@ _PRICING = {
 class OpenAIProvider:
     name = "openai"
 
-    def __init__(self, model: str = "gpt-4.1-mini", api_key: Optional[str] = None) -> None:
+    def __init__(self, model: str = "gpt-4.1-mini", api_key: str | None = None) -> None:
         try:
             import openai  # type: ignore
         except ImportError as exc:
@@ -29,7 +28,7 @@ class OpenAIProvider:
         self.model = model
         self._client = openai.OpenAI(api_key=key)
 
-    def complete(self, messages: List[Message], tools: Optional[List[ToolSpec]] = None, max_tokens: int = 1024, temperature: float = 0.2, system: Optional[str] = None) -> Completion:
+    def complete(self, messages: list[Message], tools: list[ToolSpec] | None = None, max_tokens: int = 1024, temperature: float = 0.2, system: str | None = None) -> Completion:
         api_messages = []
         if system:
             api_messages.append({"role": "system", "content": system})
@@ -53,7 +52,7 @@ class OpenAIProvider:
 
         choice = resp.choices[0]
         text = choice.message.content or ""
-        tool_calls: List[ToolCall] = []
+        tool_calls: list[ToolCall] = []
         for tc in choice.message.tool_calls or []:
             try:
                 args = json.loads(tc.function.arguments or "{}")

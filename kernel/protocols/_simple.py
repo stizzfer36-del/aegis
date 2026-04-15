@@ -1,14 +1,14 @@
 from __future__ import annotations
 
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 from kernel.protocols.base import BaseProtocol, Command, ProtocolError
 
 
 class SimpleProtocol(BaseProtocol):
-    capabilities: List[str] = []
+    capabilities: list[str] = []
 
-    def connect(self, device_path: str, fingerprint: Dict[str, Any]) -> bool:
+    def connect(self, device_path: str, fingerprint: dict[str, Any]) -> bool:
         self.device_path = device_path
         self.fingerprint = dict(fingerprint)
         def _attempt() -> bool:
@@ -23,7 +23,7 @@ class SimpleProtocol(BaseProtocol):
         self.record_outcome("disconnect", was, {"device_path": self.device_path})
         return was
 
-    def send(self, command: Command, expect_response: bool) -> Optional[bytes]:
+    def send(self, command: Command, expect_response: bool) -> bytes | None:
         if not self.connected:
             raise ProtocolError(self.name, command, b"", "not connected")
         resp = b"ok" if expect_response else None
@@ -34,7 +34,7 @@ class SimpleProtocol(BaseProtocol):
         self.record_outcome("send", True, {"firmware": str(self.fingerprint.get("firmware_version", "unknown"))})
         return None
 
-    def verify_handshake(self) -> Dict[str, str]:
+    def verify_handshake(self) -> dict[str, str]:
         if not self.connected:
             raise ProtocolError(self.name, "handshake", b"", "device offline")
         model = str(self.fingerprint.get("model", "unknown"))
@@ -45,5 +45,5 @@ class SimpleProtocol(BaseProtocol):
         self.record_outcome("handshake", True, result)
         return result
 
-    def list_capabilities(self) -> List[str]:
+    def list_capabilities(self) -> list[str]:
         return list(self.capabilities)

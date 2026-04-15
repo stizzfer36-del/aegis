@@ -2,9 +2,10 @@ from __future__ import annotations
 
 import subprocess
 import time
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional
+from typing import Any
 
 from kernel.memory import MemoryClient
 
@@ -12,12 +13,12 @@ from kernel.memory import MemoryClient
 @dataclass
 class SetupResult:
     status: str
-    steps: List[Dict[str, Any]]
+    steps: list[dict[str, Any]]
     used_memory_cache: bool
     elapsed_ms: int
     message: str
 
-    def to_dict(self) -> Dict[str, Any]:
+    def to_dict(self) -> dict[str, Any]:
         return {
             "status": self.status,
             "steps": self.steps,
@@ -32,12 +33,12 @@ class AdsbSetupService:
 
     def __init__(
         self,
-        memory: Optional[MemoryClient] = None,
-        detect_model: Optional[Callable[[], str]] = None,
-        detect_rtlsdr: Optional[Callable[[], Dict[str, str]]] = None,
-        install_driver: Optional[Callable[[Dict[str, str]], str]] = None,
-        build_stack: Optional[Callable[[], str]] = None,
-        open_map: Optional[Callable[[], str]] = None,
+        memory: MemoryClient | None = None,
+        detect_model: Callable[[], str] | None = None,
+        detect_rtlsdr: Callable[[], dict[str, str]] | None = None,
+        install_driver: Callable[[dict[str, str]], str] | None = None,
+        build_stack: Callable[[], str] | None = None,
+        open_map: Callable[[], str] | None = None,
     ) -> None:
         self.memory = memory or MemoryClient()
         self.detect_model = detect_model or self._detect_model
@@ -100,7 +101,7 @@ class AdsbSetupService:
             message="Setup completed and persisted. Next identical run can complete steps 1-4 in under 10 seconds.",
         )
 
-    def _write_memory(self, intent_key: str, steps: List[Dict[str, Any]]) -> None:
+    def _write_memory(self, intent_key: str, steps: list[dict[str, Any]]) -> None:
         self.memory.write_candidate(
             trace_id=f"setup:{intent_key}",
             topic="adsb_setup_profile",
@@ -116,7 +117,7 @@ class AdsbSetupService:
             provenance={"source": "kernel.setup", "version": 1},
         )
 
-    def _read_cache(self, intent_key: str) -> Optional[Dict[str, Any]]:
+    def _read_cache(self, intent_key: str) -> dict[str, Any] | None:
         rows = self.memory.query(topic="adsb_setup_profile", preference=intent_key)
         if not rows:
             return None
@@ -151,7 +152,7 @@ class AdsbSetupService:
         return "unknown-chromebook"
 
     @staticmethod
-    def _detect_rtlsdr() -> Dict[str, str]:
+    def _detect_rtlsdr() -> dict[str, str]:
         try:
             proc = subprocess.run(["lsusb"], check=False, capture_output=True, text=True, timeout=3)
         except (OSError, subprocess.TimeoutExpired):
@@ -173,7 +174,7 @@ class AdsbSetupService:
         return {"vendor_id": "0000", "product_id": "0000", "description": "rtl-sdr not detected"}
 
     @staticmethod
-    def _install_driver(device: Dict[str, str]) -> str:
+    def _install_driver(device: dict[str, str]) -> str:
         return f"driver configured for usb {device.get('vendor_id')}:{device.get('product_id')}"
 
     @staticmethod

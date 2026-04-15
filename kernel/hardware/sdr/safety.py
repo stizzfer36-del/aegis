@@ -2,7 +2,6 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from typing import Dict
 
 from kernel.memory import MemoryClient
 
@@ -16,7 +15,7 @@ class TransmissionRequest:
     jurisdiction: str = "US"
 
 
-LEGAL_BANDS: Dict[str, tuple[float, float]] = {
+LEGAL_BANDS: dict[str, tuple[float, float]] = {
     "US": (88.0, 108.0),
 }
 

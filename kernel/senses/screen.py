@@ -2,10 +2,9 @@ from __future__ import annotations
 
 from datetime import datetime
 from pathlib import Path
-from typing import Dict
 
 
-def screen_capture(monitor: int = 0) -> Dict[str, str]:
+def screen_capture(monitor: int = 0) -> dict[str, str]:
     try:
         import mss
         from PIL import Image
@@ -23,7 +22,7 @@ def screen_capture(monitor: int = 0) -> Dict[str, str]:
     return {"path": str(out_path)}
 
 
-def screen_read(monitor: int = 0) -> Dict[str, str]:
+def screen_read(monitor: int = 0) -> dict[str, str]:
     cap = screen_capture(monitor=monitor)
     try:
         import pytesseract

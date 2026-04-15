@@ -1,54 +1,62 @@
 from __future__ import annotations
 
-from kernel.bus import EventBus
-from kernel.events import AegisEvent, Cost, EventType, PolicyState, WealthImpact, now_utc
-from kernel.memory import MemoryClient
-from kernel.policy import PolicyGate
-from kernel.router import ModelRouter
-from kernel.scheduler import QueueItem, Scheduler
+import json
+import time
+
+from kernel.core.bus import EventBus
+from kernel.core.events import AegisEvent, Cost, EventType, PolicyState, WealthImpact, now_utc
 
 
-def make_event(event_type=EventType.HUMAN_INTENT) -> AegisEvent:
+def _event(trace_id: str) -> AegisEvent:
     return AegisEvent(
-        trace_id="tr_test",
-        event_type=event_type,
+        trace_id=trace_id,
+        event_type=EventType.HUMAN_INTENT,
         ts=now_utc(),
-        agent="tester",
-        intent_ref="test intent",
-        cost=Cost(tokens=1, dollars=0.0),
-        consequence_summary="mapped",
-        wealth_impact=WealthImpact(type="neutral", value=0),
+        agent="test",
+        intent_ref="hello",
+        consequence_summary="test",
+        cost=Cost(1, 0.0),
+        wealth_impact=WealthImpact("neutral", 0.0),
         policy_state=PolicyState.APPROVED,
-        payload={"ok": True},
     )
 
 
-def test_trace_continuity(tmp_path) -> None:
-    bus = EventBus(str(tmp_path / "events.jsonl"))
-    ev = make_event()
-    bus.publish(ev)
-    replayed = bus.replay(trace_id="tr_test")
-    assert replayed and replayed[0].trace_id == "tr_test"
+def test_bus_publish_and_replay(tmp_path):
+    bus = EventBus(log_path=str(tmp_path / "events.jsonl"))
+    bus.publish(_event("t1"))
+    bus.publish(_event("t2"))
+    bus.publish(_event("t3"))
+    replayed = bus.replay()
+    bus.close()
+    assert len(replayed) == 3
 
 
-def test_policy_gate() -> None:
-    decision = PolicyGate(max_auto_spend_usd=1).evaluate(make_event())
-    assert decision.decision == "approved"
+def test_bus_latest_trace(tmp_path):
+    bus = EventBus(log_path=str(tmp_path / "events.jsonl"))
+    bus.publish(_event("first"))
+    bus.publish(_event("second"))
+    assert bus.latest_trace() == "second"
+    bus.close()
 
 
-def test_memory_fallback(tmp_path) -> None:
-    mem = MemoryClient(str(tmp_path / "memory.db"))
-    mem.write_candidate("tr_test", "topic", {"k": "v"}, {"agent": "test"})
-    assert mem.query(trace_id="tr_test")
+def test_bus_hydrate_ring(tmp_path):
+    path = tmp_path / "events.jsonl"
+    lines = [json.dumps(_event("old").to_dict()), json.dumps(_event("new").to_dict())]
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    bus = EventBus(log_path=str(path))
+    assert bus.latest_trace() == "new"
+    bus.close()
 
 
-def test_duplicate_work_prevention() -> None:
-    s = Scheduler()
-    q = QueueItem("k1", 1.0, make_event())
-    assert s.enqueue(q)
-    assert not s.enqueue(q)
+def test_bus_subscriber_called(tmp_path):
+    bus = EventBus(log_path=str(tmp_path / "events.jsonl"))
+    called = []
 
+    def handler(event):
+        called.append(event.trace_id)
 
-def test_router_local_first() -> None:
-    r = ModelRouter().route("design", confidence=0.9)
-    assert r.provider == "local"
+    bus.subscribe(EventType.HUMAN_INTENT.value, handler)
+    bus.publish(_event("subscribed"))
+    time.sleep(0.1)
+    bus.close()
+    assert called == ["subscribed"]

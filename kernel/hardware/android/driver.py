@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-from typing import Dict
-
 from kernel.hardware.android.satellite import SatelliteBootstrap
 from kernel.hardware.android.termux import TermuxManager
 from kernel.hardware.base import BaseDriver, DriverResponse
@@ -20,7 +18,7 @@ class AndroidDriver(BaseDriver):
         self.termux = TermuxManager()
         self.satellite = SatelliteBootstrap()
 
-    def execute(self, capability: str, payload: Dict[str, str]) -> DriverResponse:
+    def execute(self, capability: str, payload: dict[str, str]) -> DriverResponse:
         if capability == "termux_install":
             return DriverResponse(ok=self.termux.install(), data={"termux": "installed"})
         if capability == "satellite_deploy":
