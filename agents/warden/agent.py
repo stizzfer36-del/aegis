@@ -69,6 +69,18 @@ class WardenAgent(BaseAgent):
             "decision": "blocked delegation path" if block else "approved delegation path",
         }
 
+
+    def check_hardware_operation(self, operation: Dict[str, Any]) -> Dict[str, Any]:
+        issues: List[str] = []
+        if operation.get("category") == "rf_tx" and not operation.get("confirm"):
+            issues.append("rf transmission requires explicit confirmation")
+        if operation.get("risk_level") in {"high", "irreversible"} and not operation.get("risk_ack"):
+            issues.append("risk acknowledgment required")
+        if operation.get("category") == "firmware_flash" and not operation.get("sha256_verified"):
+            issues.append("sha256 verification required")
+        if operation.get("is_physical") and not operation.get("human_required_event"):
+            issues.append("physical operations require HUMAN_REQUIRED routing")
+        return {"allowed": not issues, "issues": issues}
     def on_wake(self, event: AegisEvent) -> AgentOutput:
         text = " ".join([event.intent_ref or "", str(event.payload.get("intent", "") or "")])
         verdict = self.evaluate(text)

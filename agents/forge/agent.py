@@ -193,5 +193,26 @@ class ForgeAgent(BaseAgent):
             return candidate
         raise ValueError("path must be under repository root or /tmp")
 
+
+    def generate_driver(self, protocol_spec: str, device_fingerprint: Dict[str, Any]) -> str:
+        return "\n".join([
+            "from __future__ import annotations",
+            "",
+            "class GeneratedDriver:",
+            f"    protocol_spec = {protocol_spec!r}",
+            f"    fingerprint = {device_fingerprint!r}",
+        ])
+
+    def generate_firmware(self, target_chip: str, capabilities: list[str]) -> str:
+        return f"// firmware for {target_chip}\n// capabilities: {', '.join(capabilities)}\nint main(){{return 0;}}\n"
+
+    def generate_openscad(self, description: str, dimensions: Dict[str, Any]) -> str:
+        x = dimensions.get("x", 10)
+        y = dimensions.get("y", 10)
+        z = dimensions.get("z", 10)
+        return f"// {description}\ncube([{x},{y},{z}]);\n"
+
+    def generate_kicad_schematic(self, description: str, pinout: Dict[str, Any]) -> str:
+        return f"# {description}\n# pinout: {pinout}\n"
     def _result(self, summary: str, next_event_type: str) -> AgentOutput:
         return AgentOutput(agent=self.name, summary=summary, next_event_type=next_event_type, details={})

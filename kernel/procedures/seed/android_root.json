@@ -1,0 +1,1 @@
+{"procedures": [{"procedure_id": "android_root", "firmware_version": "14", "steps": ["adb", "unlock", "magisk", "verify"]}]}

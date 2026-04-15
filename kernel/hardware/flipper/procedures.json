@@ -1,0 +1,7 @@
+{
+  "device_class": "flipper_zero",
+  "procedures": [
+    {"id": "nfc_read", "steps": ["connect", "app nfc", "read card", "parse dump"]},
+    {"id": "subghz_capture", "steps": ["connect", "app subghz", "capture", "save"]}
+  ]
+}

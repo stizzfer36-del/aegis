@@ -1,0 +1,1 @@
+{"procedures": [{"procedure_id": "chromebook_jailbreak", "firmware_version": "1.0.0", "steps": ["detect", "disable_wp", "flash", "verify"]}]}
